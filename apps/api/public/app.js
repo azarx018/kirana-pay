@@ -1,206 +1,391 @@
 const $ = (id) => document.getElementById(id);
-
-const state = { file: null, busy: false };
-
 const rupiah = (n) => "Rp" + new Intl.NumberFormat("id-ID").format(n);
-const fmtDate = (iso) => {
-  const d = new Date(iso);
-  return d.toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-};
+const fmtDate = (iso) => new Date(iso).toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
-/* ---------- API key ---------- */
-const KEY_STORE = "kirana.apiKey";
-$("apiKey").value = localStorage.getItem(KEY_STORE) || "";
-$("saveKey").addEventListener("click", () => {
-  localStorage.setItem(KEY_STORE, $("apiKey").value.trim());
-  $("saveKey").textContent = "Tersimpan";
-  setTimeout(() => ($("saveKey").textContent = "Simpan"), 1200);
-  loadHistory();
-});
+const state = { me: null, providers: [], qris: [], jobs: [], keys: [], file: null };
 
-/* ---------- file picker ---------- */
-const dz = $("dropzone");
-const fileInput = $("file");
-
-dz.addEventListener("click", (e) => {
-  if (e.target.id === "clearFile") return;
-  fileInput.click();
-});
-dz.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") fileInput.click();
-});
-dz.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dz.classList.add("drag");
-});
-dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
-dz.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dz.classList.remove("drag");
-  const f = e.dataTransfer.files?.[0];
-  if (f) setFile(f);
-});
-fileInput.addEventListener("change", () => {
-  if (fileInput.files?.[0]) setFile(fileInput.files[0]);
-});
-$("clearFile").addEventListener("click", (e) => {
-  e.stopPropagation();
-  resetFile();
-  fileInput.click();
-});
-
-function setFile(f) {
-  if (!/^image\/(png|jpe?g)$/.test(f.type)) {
-    showError("Format file harus PNG atau JPEG.");
-    return;
+async function api(path, options = {}) {
+  const res = await fetch(path, { credentials: "same-origin", ...options });
+  const type = res.headers.get("content-type") || "";
+  const body = type.includes("application/json") ? await res.json() : null;
+  if (!res.ok) {
+    const err = body?.error || { code: String(res.status), message: res.statusText };
+    const e = new Error(err.message);
+    e.code = err.code;
+    e.status = res.status;
+    throw e;
   }
-  if (f.size > 5 * 1024 * 1024) {
-    showError("Ukuran file maksimal 5 MB.");
-    return;
-  }
-  state.file = f;
-  $("preview").src = URL.createObjectURL(f);
-  $("fileName").textContent = `${f.name} · ${(f.size / 1024).toFixed(0)} KB`;
-  $("dropEmpty").hidden = true;
-  $("dropPreview").hidden = false;
-  hideError();
+  return body?.data ?? body;
 }
 
-function resetFile() {
-  state.file = null;
-  fileInput.value = "";
-  $("dropEmpty").hidden = false;
-  $("dropPreview").hidden = true;
-}
+const showError = (id, msg) => { const el = $(id); el.textContent = msg; el.hidden = false; };
+const hideError = (id) => { $(id).hidden = true; };
 
-/* ---------- amount ---------- */
-const amountInput = $("amount");
+/* ---------------- auth ---------------- */
+document.querySelectorAll(".auth-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".auth-tab").forEach((b) => b.classList.toggle("active", b === btn));
+    $("loginForm").hidden = btn.dataset.auth !== "login";
+    $("registerForm").hidden = btn.dataset.auth !== "register";
+    hideError("authError");
+  });
+});
+
+$("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  hideError("authError");
+  $("loginBtn").disabled = true;
+  try {
+    await api("/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: $("loginEmail").value, password: $("loginPassword").value }),
+    });
+    await boot();
+  } catch (err) {
+    showError("authError", err.message);
+  } finally {
+    $("loginBtn").disabled = false;
+  }
+});
+
+$("registerForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  hideError("authError");
+  $("registerBtn").disabled = true;
+  try {
+    await api("/v1/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: $("regEmail").value,
+        password: $("regPassword").value,
+        merchantName: $("regMerchant").value,
+      }),
+    });
+    await boot();
+  } catch (err) {
+    showError("authError", err.message);
+  } finally {
+    $("registerBtn").disabled = false;
+  }
+});
+
+$("logout").addEventListener("click", async () => {
+  try { await api("/v1/auth/logout", { method: "POST" }); } catch { /* ignore */ }
+  state.me = null;
+  $("appView").hidden = true;
+  $("topbarAuth").hidden = true;
+  $("authView").hidden = false;
+  $("brandSub").textContent = "Payments, Made Effortless.";
+});
+
+/* ---------------- tabs ---------------- */
+document.querySelectorAll(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
+    for (const name of ["generator", "qris", "settings"]) {
+      $(`tab-${name}`).hidden = name !== btn.dataset.tab;
+    }
+  });
+});
+
+/* ---------------- generator ---------------- */
+const amountInput = $("genAmount");
 amountInput.addEventListener("input", () => {
   const digits = amountInput.value.replace(/\D/g, "");
   amountInput.value = digits ? new Intl.NumberFormat("id-ID").format(Number(digits)) : "";
 });
-$("chips").addEventListener("click", (e) => {
+$("genChips").addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-amount]");
   if (!btn) return;
   amountInput.value = new Intl.NumberFormat("id-ID").format(Number(btn.dataset.amount));
-  amountInput.focus();
 });
 
-/* ---------- submit ---------- */
-$("form").addEventListener("submit", async (e) => {
+$("genForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (state.busy) return;
-
+  hideError("genError");
   const amount = Number(amountInput.value.replace(/\D/g, ""));
-  if (!state.file) return showError("Pilih gambar QRIS dulu.");
-  if (!amount || amount < 1) return showError("Nominal harus lebih dari 0.");
-
-  const key = $("apiKey").value.trim();
-  if (!key) return showError("Isi API key dulu (ada di ~/kirana-pay/.env).");
+  const qrisId = $("genQris").value;
+  if (!qrisId) return showError("genError", "Pilih QRIS dulu (tambahkan di tab QRIS Saya).");
+  if (!amount) return showError("genError", "Nominal harus lebih dari 0.");
 
   const body = new FormData();
-  body.append("file", state.file);
+  body.append("qrisId", qrisId);
   body.append("amount", String(amount));
-  const note = $("note").value.trim();
+  const note = $("genNote").value.trim();
   if (note) body.append("note", note);
 
-  setBusy(true);
-  hideError();
+  $("genSubmit").disabled = true;
+  $("genSubmit").textContent = "Memproses…";
   try {
-    const res = await fetch("/v1/qr/convert", { method: "POST", headers: { "x-api-key": key }, body });
-    const json = await res.json();
-    if (!res.ok || !json.success) {
-      throw new Error(`${json?.error?.code || res.status}: ${json?.error?.message || "gagal"}`);
-    }
-    renderResult(json.data);
-    loadHistory();
+    const d = await api("/v1/qr/convert", { method: "POST", body });
+    renderResult(d);
+    loadJobs();
   } catch (err) {
-    showError(err.message || "Gagal membuat QR.");
+    showError("genError", `${err.code}: ${err.message}`);
   } finally {
-    setBusy(false);
+    $("genSubmit").disabled = false;
+    $("genSubmit").textContent = "Generate QR";
   }
 });
 
-function setBusy(busy) {
-  state.busy = busy;
-  const btn = $("submit");
-  btn.disabled = busy;
-  btn.textContent = busy ? "Memproses…" : "Generate QR";
-}
-
 function renderResult(d) {
-  $("empty").hidden = true;
-  $("result").hidden = false;
-  $("resultStatus").textContent = d.status;
-  $("qrImg").src = `data:image/png;base64,${d.qrImage.data}`;
-  $("resultAmount").textContent = rupiah(d.amount);
-  $("resultMerchant").textContent = d.merchant.name;
-  $("resultNmid").textContent = d.merchant.nmid;
-  $("resultId").textContent = d.id;
-
-  const link = $("download");
+  $("genEmpty").hidden = true;
+  $("genResult").hidden = false;
+  $("genStatus").textContent = d.status;
+  $("genQrImg").src = `data:image/png;base64,${d.qrImage.data}`;
+  $("genResultAmount").textContent = rupiah(d.amount);
+  $("genResultMerchant").textContent = d.merchant.name;
+  $("genResultNmid").textContent = d.merchant.nmid;
+  $("genResultId").textContent = d.id;
+  const link = $("genDownload");
   link.href = `data:image/png;base64,${d.qrImage.data}`;
   link.download = `qris-${d.amount}-${d.id.slice(0, 8)}.png`;
 }
 
-$("again").addEventListener("click", () => {
-  $("result").hidden = true;
-  $("empty").hidden = false;
-  $("resultStatus").textContent = "belum ada";
-  amountInput.focus();
+$("genAgain").addEventListener("click", () => {
+  $("genResult").hidden = true;
+  $("genEmpty").hidden = false;
+  $("genStatus").textContent = "belum ada";
 });
 
-/* ---------- errors ---------- */
-function showError(msg) {
-  const el = $("error");
-  el.textContent = msg;
-  el.hidden = false;
-}
-function hideError() {
-  $("error").hidden = true;
+/* ---------------- qris ---------------- */
+const qrisDz = $("qrisDropzone");
+const qrisFile = $("qrisFile");
+qrisDz.addEventListener("click", (e) => { if (e.target.id !== "qrisClearFile") qrisFile.click(); });
+qrisDz.addEventListener("dragover", (e) => { e.preventDefault(); qrisDz.classList.add("drag"); });
+qrisDz.addEventListener("dragleave", () => qrisDz.classList.remove("drag"));
+qrisDz.addEventListener("drop", (e) => {
+  e.preventDefault();
+  qrisDz.classList.remove("drag");
+  if (e.dataTransfer.files?.[0]) setQrisFile(e.dataTransfer.files[0]);
+});
+qrisFile.addEventListener("change", () => { if (qrisFile.files?.[0]) setQrisFile(qrisFile.files[0]); });
+$("qrisClearFile").addEventListener("click", (e) => { e.stopPropagation(); qrisFile.click(); });
+
+function setQrisFile(f) {
+  if (!/^image\/(png|jpe?g)$/.test(f.type)) return showError("qrisError", "File harus PNG atau JPEG.");
+  state.file = f;
+  $("qrisPreview").src = URL.createObjectURL(f);
+  $("qrisFileName").textContent = `${f.name} · ${(f.size / 1024).toFixed(0)} KB`;
+  $("qrisDropEmpty").hidden = true;
+  $("qrisDropPreview").hidden = false;
+  hideError("qrisError");
 }
 
-/* ---------- history ---------- */
-$("refresh").addEventListener("click", loadHistory);
+$("qrisForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  hideError("qrisError");
+  if (!state.file) return showError("qrisError", "Pilih gambar QRIS dulu.");
+  if (!$("qrisProvider").value) return showError("qrisError", "Pilih payment provider.");
 
-async function loadHistory() {
-  const key = $("apiKey").value.trim();
-  if (!key) return;
+  const body = new FormData();
+  body.append("file", state.file);
+  body.append("providerCode", $("qrisProvider").value);
+  body.append("displayName", $("qrisName").value.trim());
+
+  $("qrisSubmit").disabled = true;
+  $("qrisSubmit").textContent = "Menyimpan…";
   try {
-    const res = await fetch("/v1/qr?limit=10", { headers: { "x-api-key": key } });
-    if (!res.ok) return;
-    const json = await res.json();
-    renderHistory(json.data || []);
-  } catch {
-    /* history is best-effort */
+    await api("/v1/qris", { method: "POST", body });
+    state.file = null;
+    $("qrisForm").reset();
+    $("qrisDropEmpty").hidden = false;
+    $("qrisDropPreview").hidden = true;
+    await loadQris();
+  } catch (err) {
+    showError("qrisError", `${err.code}: ${err.message}`);
+  } finally {
+    $("qrisSubmit").disabled = false;
+    $("qrisSubmit").textContent = "Simpan QRIS";
   }
+});
+
+async function loadQris() {
+  state.qris = await api("/v1/qris");
+  const active = state.qris.filter((q) => q.status === "ACTIVE");
+  $("qrisCount").textContent = `${active.length} aktif / ${state.qris.length} total`;
+
+  const select = $("genQris");
+  select.innerHTML = "";
+  if (!active.length) {
+    select.innerHTML = '<option value="">— belum ada QRIS aktif —</option>';
+  } else {
+    for (const q of active) {
+      const opt = document.createElement("option");
+      opt.value = q.id;
+      opt.textContent = `${q.displayName} · ${q.provider.name}`;
+      select.appendChild(opt);
+    }
+  }
+
+  const list = $("qrisList");
+  list.innerHTML = "";
+  $("qrisEmpty").hidden = state.qris.length > 0;
+  list.hidden = state.qris.length === 0;
+
+  for (const q of state.qris) {
+    const li = document.createElement("li");
+    li.className = "qris-item";
+    li.innerHTML = `
+      <img class="qris-thumb" src="${q.imageUrl}" alt="" loading="lazy" />
+      <div class="h-left">
+        <span class="h-merchant">${escapeHtml(q.displayName)}
+          <span class="pill ${q.status === "ARCHIVED" ? "pill-muted" : ""}">${q.status}</span></span>
+        <span class="h-meta">${escapeHtml(q.provider.name)} · ${escapeHtml(q.nmid || "-")}</span>
+      </div>
+      <div class="qris-actions">
+        <button class="link" data-replace="${q.id}" type="button">Ganti</button>
+        ${q.status === "ACTIVE" ? `<button class="link danger" data-archive="${q.id}" type="button">Arsip</button>` : ""}
+      </div>`;
+    list.appendChild(li);
+  }
+
+  list.querySelectorAll("[data-archive]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!confirm("Arsipkan QRIS ini?")) return;
+      await api(`/v1/qris/${btn.dataset.archive}`, { method: "DELETE" });
+      await loadQris();
+    }),
+  );
+
+  list.querySelectorAll("[data-replace]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg";
+      input.onchange = async () => {
+        const f = input.files?.[0];
+        if (!f) return;
+        const body = new FormData();
+        body.append("file", f);
+        try {
+          await api(`/v1/qris/${btn.dataset.replace}/image`, { method: "PUT", body });
+          await loadQris();
+        } catch (err) {
+          alert(`${err.code}: ${err.message}`);
+        }
+      };
+      input.click();
+    }),
+  );
 }
 
-function renderHistory(items) {
-  const list = $("history");
-  const empty = $("historyEmpty");
+/* ---------------- jobs ---------------- */
+async function loadJobs() {
+  state.jobs = await api("/v1/qr?limit=10");
+  const list = $("jobs");
   list.innerHTML = "";
-  if (!items.length) {
-    empty.hidden = false;
-    list.hidden = true;
-    return;
-  }
-  empty.hidden = true;
-  list.hidden = false;
-  for (const it of items) {
+  $("jobsEmpty").hidden = state.jobs.length > 0;
+  list.hidden = state.jobs.length === 0;
+  for (const j of state.jobs) {
     const li = document.createElement("li");
     li.innerHTML = `
       <div class="h-left">
-        <span class="h-merchant">${escapeHtml(it.merchant?.name || "-")}<span class="pill">${escapeHtml(it.status)}</span></span>
-        <span class="h-meta">${fmtDate(it.createdAt)} · ${escapeHtml(it.merchant?.nmid || "")}</span>
+        <span class="h-merchant">${escapeHtml(j.merchant.name)}<span class="pill">${escapeHtml(j.status)}</span></span>
+        <span class="h-meta">${fmtDate(j.createdAt)} · ${escapeHtml(j.merchant.nmid)}</span>
       </div>
-      <span class="h-amount">${rupiah(it.amount)}</span>`;
+      <span class="h-amount">${rupiah(j.amount)}</span>`;
     list.appendChild(li);
   }
 }
+$("refreshJobs").addEventListener("click", loadJobs);
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/* ---------------- settings ---------------- */
+$("merchantForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("merchantMsg").hidden = true;
+  try {
+    const m = await api("/v1/merchant", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: $("merchantName").value.trim(), phone: $("merchantPhone").value.trim() }),
+    });
+    $("merchantName").value = m.name;
+    $("merchantBadge").textContent = m.name;
+    $("merchantMsg").hidden = false;
+  } catch (err) {
+    alert(`${err.code}: ${err.message}`);
+  }
+});
+
+async function loadKeys() {
+  state.keys = await api("/v1/api-keys");
+  const list = $("keysList");
+  list.innerHTML = "";
+  $("keysEmpty").hidden = state.keys.length > 0;
+  list.hidden = state.keys.length === 0;
+  for (const k of state.keys) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <div class="h-left">
+        <span class="h-merchant">${escapeHtml(k.name)} <span class="pill ${k.revoked ? "pill-muted" : ""}">${k.revoked ? "REVOKED" : "ACTIVE"}</span></span>
+        <span class="h-meta mono">${escapeHtml(k.prefix)}… · dibuat ${fmtDate(k.createdAt)}</span>
+      </div>
+      ${k.revoked ? "" : `<button class="link danger" data-revoke="${k.id}" type="button">Revoke</button>`}`;
+    list.appendChild(li);
+  }
+  list.querySelectorAll("[data-revoke]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!confirm("Revoke API key ini? Aplikasi yang memakainya akan langsung gagal.")) return;
+      await api(`/v1/api-keys/${btn.dataset.revoke}`, { method: "DELETE" });
+      await loadKeys();
+    }),
+  );
 }
 
-loadHistory();
+$("newKey").addEventListener("click", async () => {
+  const name = prompt("Nama key (mis. server-produksi)", "API key");
+  if (name === null) return;
+  try {
+    const data = await api("/v1/api-keys", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    $("keyOnceValue").textContent = data.key;
+    $("keyOnce").hidden = false;
+    await loadKeys();
+  } catch (err) {
+    alert(`${err.code}: ${err.message}`);
+  }
+});
+
+/* ---------------- boot ---------------- */
+async function boot() {
+  try {
+    state.me = await api("/v1/auth/me");
+  } catch {
+    $("authView").hidden = false;
+    $("appView").hidden = true;
+    $("topbarAuth").hidden = true;
+    return;
+  }
+  $("authView").hidden = true;
+  $("appView").hidden = false;
+  $("topbarAuth").hidden = false;
+  $("merchantBadge").textContent = state.me.merchant.name;
+  $("brandSub").textContent = state.me.user.email;
+  $("merchantName").value = state.me.merchant.name;
+  $("merchantEmail").value = state.me.user.email;
+  $("settingsRole").textContent = state.me.merchant.role;
+
+  state.providers = await api("/v1/payment-providers");
+  const psel = $("qrisProvider");
+  psel.innerHTML = '<option value="">— pilih provider —</option>';
+  for (const p of state.providers) {
+    const o = document.createElement("option");
+    o.value = p.code;
+    o.textContent = p.name;
+    psel.appendChild(o);
+  }
+
+  await Promise.all([loadQris(), loadJobs(), loadKeys()]);
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+boot();

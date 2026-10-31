@@ -17,7 +17,7 @@ Generated PNGs live in volume `qrdata` → `/app/var/qr` inside the API containe
 
 ```bash
 cd ~/kirana-pay
-cp .env.example .env      # already done on this VM; set API_KEY + DB_PASSWORD
+cp .env.example .env      # already done on this VM; set COOKIE_SECURE + DB_PASSWORD
 sudo docker compose build
 sudo docker compose up -d
 sudo docker compose ps

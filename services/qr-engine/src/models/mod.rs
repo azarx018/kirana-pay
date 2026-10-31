@@ -28,6 +28,29 @@ pub struct ConvertMeta {
     pub is_dynamic: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectRequest {
+    pub image_base64: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectResponse {
+    pub meta: InspectMeta,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectMeta {
+    pub nmid: String,
+    pub merchant_name: String,
+    pub currency: String,
+    pub country: String,
+    pub is_dynamic: bool,
+    pub has_amount: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EngineErrorBody {
     pub success: bool,

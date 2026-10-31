@@ -7,6 +7,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/internal/qr/convert", post(qr::convert))
+        .route("/internal/qr/inspect", post(qr::inspect))
         .with_state(qr::AppState::default())
 }
 

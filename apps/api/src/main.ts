@@ -1,4 +1,5 @@
 import { ValidationPipe, Logger } from '@nestjs/common';
+import cookieParser from 'cookie-parser';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'node:path';
@@ -8,6 +9,8 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: false });
+
+  app.use(cookieParser());
 
   // Dashboard (static, no build step) served by the API itself.
   app.useStaticAssets(join(__dirname, '..', 'public'), { index: 'index.html' });

@@ -7,17 +7,23 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { ConvertQrDto } from './dto/convert-qr.dto';
+import type { Response } from 'express';
+import { ApiKeyOrSessionGuard } from '../auth/api-key.guard';
+import { AuthContext } from '../auth/auth.types';
+import { CurrentAuth } from '../auth/current-auth.decorator';
 import { QrService, type ConvertResult } from './qr.service';
 
 @ApiTags('qr')
 @Controller('v1/qr')
+@UseGuards(ApiKeyOrSessionGuard)
 export class QrController {
   constructor(private readonly qr: QrService) {}
 
@@ -26,51 +32,43 @@ export class QrController {
   @UseInterceptors(
     FileInterceptor('file', {
       limits: { fileSize: Number(process.env.MAX_UPLOAD_BYTES ?? 5 * 1024 * 1024) },
-      fileFilter: (_req, file, cb) => {
-        if (!/^image\/(png|jpe?g)$/.test(file.mimetype)) {
-          cb(new BadRequestException({ code: 'INVALID_FILE_TYPE', message: 'Only PNG or JPEG images are accepted.' }), false);
-          return;
-        }
-        cb(null, true);
-      },
     }),
   )
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['file', 'amount'],
       properties: {
         file: { type: 'string', format: 'binary' },
+        qrisId: { type: 'string', format: 'uuid' },
         amount: { type: 'integer', example: 2300 },
-        note: { type: 'string', nullable: true, example: 'INV-001' },
+        note: { type: 'string', nullable: true },
       },
     },
   })
-  @ApiOperation({ summary: 'Convert a static QRIS image into an amount-specific QR' })
+  @ApiOperation({ summary: 'Convert a stored QRIS (qrisId) or an uploaded image into an amount-specific QR' })
   async convert(
+    @CurrentAuth() ctx: AuthContext,
     @UploadedFile() file: Express.Multer.File | undefined,
-    @Body() dto: ConvertQrDto,
+    @Body('qrisId') qrisId: string | undefined,
+    @Body('amount') amount: string,
+    @Body('note') note?: string,
   ): Promise<{ success: true; data: ConvertResult }> {
-    const data = await this.qr.convert(file, dto.amount, dto.note);
+    if (!qrisId && !file) {
+      throw new BadRequestException({ code: 'INVALID_FILE_TYPE', message: 'Provide qrisId or file.' });
+    }
+    const data = await this.qr.convert(ctx, { file, qrisId, amount, note });
     return { success: true, data };
   }
 
   @Get()
-  @ApiOperation({ summary: 'List recent QR jobs (metadata only)' })
-  async findAll(@Query('limit') limit?: string): Promise<{
-    success: true;
-    data: Array<{
-      id: string;
-      status: string;
-      amount: number;
-      currency: string;
-      merchant: { nmid: string; name: string };
-      createdAt: string;
-    }>;
-  }> {
+  @ApiOperation({ summary: 'List recent QR jobs for the current merchant' })
+  async findAll(
+    @CurrentAuth() ctx: AuthContext,
+    @Query('limit') limit?: string,
+  ): Promise<{ success: true; data: unknown[] }> {
     const take = Math.min(Math.max(Number(limit ?? 10) || 10, 1), 50);
-    const rows = await this.qr.findAll(take);
+    const rows = await this.qr.findAll(ctx.merchantId, take);
     return {
       success: true,
       data: rows.map((job) => ({
@@ -78,6 +76,7 @@ export class QrController {
         status: job.status,
         amount: Number(job.amount),
         currency: job.currency,
+        qrisId: job.qrisId,
         merchant: { nmid: job.nmid, name: job.merchantName },
         createdAt: job.createdAt.toISOString(),
       })),
@@ -86,18 +85,11 @@ export class QrController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Read processing metadata for a generated QR' })
-  async findOne(@Param('id', new ParseUUIDPipe()) id: string): Promise<{
-    success: true;
-    data: {
-      id: string;
-      status: string;
-      amount: number;
-      currency: string;
-      merchant: { nmid: string; name: string };
-      createdAt: string;
-    };
-  }> {
-    const job = await this.qr.findOne(id);
+  async findOne(
+    @CurrentAuth() ctx: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ success: true; data: unknown }> {
+    const job = await this.qr.findOne(ctx.merchantId, id);
     return {
       success: true,
       data: {
@@ -105,9 +97,23 @@ export class QrController {
         status: job.status,
         amount: Number(job.amount),
         currency: job.currency,
+        qrisId: job.qrisId,
         merchant: { nmid: job.nmid, name: job.merchantName },
         createdAt: job.createdAt.toISOString(),
       },
     };
+  }
+
+  @Get(':id/image')
+  @ApiOperation({ summary: 'Download the generated QR image (merchant scoped)' })
+  async image(
+    @CurrentAuth() ctx: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { buffer } = await this.qr.readOutput(ctx.merchantId, id);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(buffer);
   }
 }

@@ -89,3 +89,27 @@ async fn rejects_zero_amount() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "INVALID_AMOUNT");
 }
+
+#[tokio::test]
+async fn inspect_returns_metadata_without_transforming() {
+    let app = routes::router();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/qr/inspect")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "imageBase64": fixture_png_b64() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["meta"]["nmid"], "ID9999999999999");
+    assert_eq!(body["meta"]["isDynamic"], false);
+    assert_eq!(body["meta"]["hasAmount"], false);
+}

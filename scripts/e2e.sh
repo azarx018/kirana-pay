@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# End-to-end check: upload a static QRIS image -> dynamic QR -> metadata.
+# End-to-end: auth -> QRIS upload -> conversion -> tenant isolation -> API key.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE_PORT="${ENGINE_PORT:-8082}"
 API_PORT="${API_PORT:-3101}"
-API_KEY="${API_KEY:-dev-local-key}"
-GO="./services/qr-engine/target/debug/qr-engine"
+BASE="http://127.0.0.1:$API_PORT"
+JAR_A=/tmp/kirana_a.jar; JAR_B=/tmp/kirana_b.jar
+rm -f "$JAR_A" "$JAR_B"
 
 cleanup() {
   [[ -n "${ENGINE_PID:-}" ]] && kill "$ENGINE_PID" 2>/dev/null || true
@@ -14,60 +15,124 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> building"
+fail() { echo "FAIL: $*"; exit 1; }
+
+echo "==> build"
 cargo build --quiet --manifest-path "$ROOT/services/qr-engine/Cargo.toml"
 ( cd "$ROOT/apps/api" && pnpm build >/dev/null )
 
-echo "==> starting qr-engine :$ENGINE_PORT"
+echo "==> start services"
 cd "$ROOT"
-QR_ENGINE_PORT="$ENGINE_PORT" "$GO" >/tmp/kirana-engine.log 2>&1 &
+QR_ENGINE_PORT="$ENGINE_PORT" ./services/qr-engine/target/debug/qr-engine >/tmp/kirana-engine.log 2>&1 &
 ENGINE_PID=$!
-
-echo "==> starting api :$API_PORT"
 ( cd "$ROOT/apps/api" && QR_ENGINE_URL="http://127.0.0.1:$ENGINE_PORT" PORT="$API_PORT" \
-  API_KEY="$API_KEY" \
-  DB_HOST="${DB_HOST:-127.0.0.1}" DB_USER="${DB_USER:-kirana}" \
-  DB_PASSWORD="${DB_PASSWORD:-kirana}" DB_NAME="${DB_NAME:-kirana_pay}" \
-  node dist/main.js >/tmp/kirana-api.log 2>&1 ) &
+  DB_HOST="${DB_HOST:-127.0.0.1}" DB_USER="${DB_USER:-kirana}" DB_PASSWORD="${DB_PASSWORD:-kirana}" \
+  DB_NAME="${DB_NAME:-kirana_pay}" exec node dist/main.js >/tmp/kirana-api.log 2>&1 ) &
 API_PID=$!
 
-for _ in $(seq 1 30); do
-  curl -sf "http://127.0.0.1:$API_PORT/health" >/dev/null && break
-  sleep 1
-done
-curl -sf "http://127.0.0.1:$API_PORT/health" >/dev/null || { echo "api failed to start"; tail -20 /tmp/kirana-api.log; exit 1; }
+for _ in $(seq 1 40); do curl -sf "$BASE/health" >/dev/null && break; sleep 1; done
+curl -sf "$BASE/health" >/dev/null || { tail -20 /tmp/kirana-api.log; fail "api did not start"; }
 echo "    health ok"
 
-echo "==> rendering fixture from golden vectors"
+echo "==> fixture"
 python3.12 - <<'PY'
 import json, qrcode
 g = json.load(open("services/qr-engine/testdata/golden.json"))
 qrcode.make(g["static_payload"], box_size=10, border=2).save("/tmp/kirana_fixture.png")
 PY
 
-echo "==> POST /v1/qr/convert"
-curl -sf -X POST "http://127.0.0.1:$API_PORT/v1/qr/convert" \
-  -H "x-api-key: $API_KEY" \
-  -F "file=@/tmp/kirana_fixture.png;type=image/png" \
-  -F "amount=2300" \
-  -F "note=TES KEDUA" > /tmp/kirana_resp.json
+SUFFIX=$(date +%s)
+A_EMAIL="owner-a-$SUFFIX@kirana.test"
+B_EMAIL="owner-b-$SUFFIX@kirana.test"
 
+echo "==> register merchant A + B"
+curl -sf -c "$JAR_A" -X POST "$BASE/v1/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$A_EMAIL\",\"password\":\"rahasia-sekali-123\",\"merchantName\":\"Toko A\"}" >/tmp/a.json || fail "register A"
+curl -sf -c "$JAR_B" -X POST "$BASE/v1/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$B_EMAIL\",\"password\":\"rahasia-sekali-123\",\"merchantName\":\"Toko B\"}" >/tmp/b.json || fail "register B"
+grep -q '"success":true' /tmp/a.json || fail "register A payload"
+
+echo "==> providers registry"
+curl -sf -b "$JAR_A" "$BASE/v1/payment-providers" >/tmp/prov.json || fail "providers"
 python3.12 - <<'PY'
-import json, base64, sys
-r = json.load(open("/tmp/kirana_resp.json"))
-assert r["success"] is True, r
-d = r["data"]
-assert d["amount"] == 2300, d
-assert d["merchant"]["nmid"] == "ID9999999999999", d
-png = base64.b64decode(d["qrImage"]["data"])
-assert png[:8] == b"\x89PNG\r\n\x1a\n", "not a png"
-open("/tmp/kirana_out.png", "wb").write(png)
-open("/tmp/kirana_id.txt", "w").write(d["id"])
-print("    convert ok:", d["id"], len(png), "bytes")
+import json
+codes = [p["code"] for p in json.load(open("/tmp/prov.json"))["data"]]
+assert codes == ["DANA_BUSINESS", "GOPAY_MERCHANT", "SHOPEEPAY_MERCHANT"], codes
+print("    providers:", codes)
 PY
 
-echo "==> GET /v1/qr/:id"
-curl -sf -H "x-api-key: $API_KEY" "http://127.0.0.1:$API_PORT/v1/qr/$(cat /tmp/kirana_id.txt)" | tee /tmp/kirana_meta.json
-echo
+echo "==> upload QRIS (A)"
+QRIS_ID=$(curl -sf -b "$JAR_A" -X POST "$BASE/v1/qris" \
+  -F "file=@/tmp/kirana_fixture.png;type=image/png" \
+  -F "providerCode=DANA_BUSINESS" -F "displayName=QR Toko Utama" \
+  | python3.12 -c 'import sys,json; d=json.load(sys.stdin); print(d["data"]["id"])')
+[ -n "$QRIS_ID" ] || fail "qris upload"
+echo "    qris=$QRIS_ID"
 
+echo "==> reject unsupported provider"
+CODE=$(curl -s -o /tmp/bad_provider.json -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/qris" \
+  -F "file=@/tmp/kirana_fixture.png;type=image/png" -F "providerCode=NOPE" -F "displayName=X")
+[ "$CODE" = "400" ] || fail "unsupported provider accepted ($CODE)"
+grep -q 'UNSUPPORTED_PROVIDER' /tmp/bad_provider.json || fail "wrong error code for provider"
+
+echo "==> convert via qrisId (A)"
+curl -sf -b "$JAR_A" -X POST "$BASE/v1/qr/convert" -F "qrisId=$QRIS_ID" -F "amount=2300" \
+  >/tmp/conv.json || fail "convert"
+JOB_ID=$(python3.12 - <<'PY'
+import json
+d = json.load(open("/tmp/conv.json"))["data"]
+assert d["amount"] == 2300, d
+assert d["merchant"]["nmid"] == "ID9999999999999", d
+print(d["id"])
+PY
+)
+echo "    job=$JOB_ID"
+
+echo "==> tenant isolation (B must not reach A)"
+for path in "/v1/qris/$QRIS_ID" "/v1/qris/$QRIS_ID/image" "/v1/qr/$JOB_ID" "/v1/qr/$JOB_ID/image"; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_B" "$BASE$path")
+  [ "$CODE" = "404" ] || fail "cross-tenant read allowed on $path ($CODE)"
+done
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_B" -X POST "$BASE/v1/qr/convert" -F "qrisId=$QRIS_ID" -F "amount=1000")
+[ "$CODE" = "404" ] || fail "cross-tenant convert allowed ($CODE)"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_B" -X DELETE "$BASE/v1/qris/$QRIS_ID")
+[ "$CODE" = "404" ] || fail "cross-tenant archive allowed ($CODE)"
+echo "    cross-tenant requests rejected"
+
+echo "==> merchant B list is empty"
+curl -sf -b "$JAR_B" "$BASE/v1/qris" | python3.12 -c 'import sys,json; d=json.load(sys.stdin); assert d["data"]==[], d; print("    ok")'
+
+echo "==> api key for A works, B key cannot touch A QRIS"
+KEY_A=$(curl -sf -b "$JAR_A" -X POST "$BASE/v1/api-keys" -H 'content-type: application/json' \
+  -d '{"name":"e2e"}' | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"]["key"])')
+KEY_B=$(curl -sf -b "$JAR_B" -X POST "$BASE/v1/api-keys" -H 'content-type: application/json' \
+  -d '{"name":"e2e"}' | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"]["key"])')
+[ -n "$KEY_A" ] || fail "api key create"
+
+CODE=$(curl -s -o /tmp/keyconv.json -w '%{http_code}' -X POST "$BASE/v1/qr/convert" -H "x-api-key: $KEY_A" -F "qrisId=$QRIS_ID" -F "amount=5000")
+[ "$CODE" = "201" ] || fail "api key convert failed ($CODE)"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/qr/convert" -H "x-api-key: $KEY_B" -F "qrisId=$QRIS_ID" -F "amount=5000")
+[ "$CODE" = "404" ] || fail "api key crossed tenants ($CODE)"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/qris")
+[ "$CODE" = "401" ] || fail "unauthenticated access allowed ($CODE)"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: kp_live_deadbeef" "$BASE/v1/qr?limit=1")
+[ "$CODE" = "401" ] || fail "bogus api key accepted ($CODE)"
+echo "    api key scoping ok"
+
+echo "==> revoke + archive"
+KEY_ID=$(curl -sf -b "$JAR_A" "$BASE/v1/api-keys" | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"][0]["id"])')
+curl -sf -b "$JAR_A" -X DELETE "$BASE/v1/api-keys/$KEY_ID" >/dev/null
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/qr/convert" -H "x-api-key: $KEY_A" -F "qrisId=$QRIS_ID" -F "amount=5000")
+[ "$CODE" = "401" ] || fail "revoked key still works ($CODE)"
+curl -sf -b "$JAR_A" -X DELETE "$BASE/v1/qris/$QRIS_ID" >/dev/null
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/qr/convert" -F "qrisId=$QRIS_ID" -F "amount=5000")
+[ "$CODE" = "400" ] || fail "archived qris still convertible ($CODE)"
+echo "    revocation + archive ok"
+
+echo "==> logout invalidates session"
+curl -sf -b "$JAR_A" -c "$JAR_A" -X POST "$BASE/v1/auth/logout" >/dev/null
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" "$BASE/v1/qris")
+[ "$CODE" = "401" ] || fail "session still valid after logout ($CODE)"
+
+echo
 echo "E2E PASSED"

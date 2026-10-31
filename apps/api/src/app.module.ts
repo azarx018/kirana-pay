@@ -2,14 +2,28 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { ApiKeysModule } from './api-keys/api-keys.module';
+import { AuthModule } from './auth/auth.module';
+import { ApiKey } from './entities/api-key.entity';
+import { MerchantMember } from './entities/merchant-member.entity';
+import { MerchantQris } from './entities/merchant-qris.entity';
+import { Merchant } from './entities/merchant.entity';
+import { PaymentProvider } from './entities/payment-provider.entity';
+import { Session } from './entities/session.entity';
+import { User } from './entities/user.entity';
 import { HealthController } from './health.controller';
+import { MerchantModule } from './merchant/merchant.module';
+import { InitialMultiTenant1700000000000 } from './migrations/1700000000000-InitialMultiTenant';
+import { ProvidersModule } from './providers/providers.module';
 import { QrModule } from './qr/qr.module';
 import { QrJob } from './qr/qr-job.entity';
+import { QrisModule } from './qris/qris.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -19,10 +33,19 @@ import { QrJob } from './qr/qr-job.entity';
         username: config.get<string>('DB_USER', 'kirana'),
         password: config.get<string>('DB_PASSWORD', 'kirana'),
         database: config.get<string>('DB_NAME', 'kirana_pay'),
-        entities: [QrJob],
-        synchronize: config.get<string>('DB_SYNCHRONIZE', 'true') === 'true',
+        entities: [User, Merchant, MerchantMember, Session, PaymentProvider, MerchantQris, ApiKey, QrJob],
+        migrations: [InitialMultiTenant1700000000000],
+        migrationsRun: true,
+        autoLoadEntities: true,
+        synchronize: false,
       }),
     }),
+    StorageModule,
+    AuthModule,
+    MerchantModule,
+    ProvidersModule,
+    QrisModule,
+    ApiKeysModule,
     QrModule,
   ],
   controllers: [HealthController],

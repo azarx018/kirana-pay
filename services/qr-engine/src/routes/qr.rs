@@ -7,7 +7,8 @@ use crate::config::Config;
 use crate::errors::QrError;
 use crate::generator;
 use crate::models::{
-    ConvertMeta, ConvertRequest, ConvertResponse, EngineErrorBody, EngineErrorDetail,
+    ConvertMeta, ConvertRequest, ConvertResponse, EngineErrorBody, EngineErrorDetail, InspectMeta,
+    InspectRequest, InspectResponse,
 };
 use crate::parser::image_decoder;
 use crate::transformer;
@@ -46,6 +47,51 @@ fn decode_error_to_qr_error(e: crate::parser::DecodeError) -> QrError {
         NotAnImage => QrError::InvalidImageType,
         NoQr => QrError::QrNotReadable,
     }
+}
+
+/// Read-only inspection: decode + validate a QRIS image without transforming it.
+pub async fn inspect(
+    State(state): State<AppState>,
+    Json(req): Json<InspectRequest>,
+) -> axum::response::Response {
+    let cfg = state.config.clone();
+
+    let payload = match image_decoder::decode_qr_from_base64(&req.image_base64, cfg.max_image_bytes) {
+        Ok(p) => p,
+        Err(e) => return error_response(decode_error_to_qr_error(e)),
+    };
+
+    let info = match validator::validate_static(&payload) {
+        Ok(i) => i,
+        Err(msg) => {
+            let err = if msg.contains("tag 51") || msg.contains("ID.CO.QRIS.WWW") {
+                QrError::UnsupportedQrFormat
+            } else {
+                QrError::ValidationFailed(msg)
+            };
+            return error_response(err);
+        }
+    };
+
+    let fields = crate::parser::parse(&payload).unwrap_or_default();
+    let has_amount = fields.iter().any(|f| f.tag == "54");
+    let is_dynamic = fields
+        .iter()
+        .find(|f| f.tag == "01")
+        .map(|f| f.value == "12")
+        .unwrap_or(false);
+
+    Json(InspectResponse {
+        meta: InspectMeta {
+            nmid: info.nmid,
+            merchant_name: info.merchant_name,
+            currency: info.currency,
+            country: info.country,
+            is_dynamic,
+            has_amount,
+        },
+    })
+    .into_response()
 }
 
 pub async fn convert(

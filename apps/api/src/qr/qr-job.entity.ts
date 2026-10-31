@@ -31,6 +31,15 @@ export class QrJob {
   @Column({ type: 'varchar', length: 255 })
   qrPath!: string;
 
+  /** Owning merchant. Nullable only for rows created before multi-tenancy. */
+  @Index()
+  @Column({ type: 'uuid', nullable: true })
+  merchantId!: string | null;
+
+  @Index()
+  @Column({ type: 'uuid', nullable: true })
+  qrisId!: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;
 }
