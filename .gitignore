@@ -5,3 +5,7 @@ var/
 *.log
 .env
 testdata/*.png
+
+# editor junk
+*.swp
+*.swo
