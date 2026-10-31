@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, errMessage } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { digitsOnly, fmtDate, formatAmountInput, rupiah } from "@/lib/format";
 import type { ConvertResult, QrJob, Qris } from "@/lib/types";
-import { DownloadIcon, QrIcon } from "./icons";
+import { CardIcon, CheckBadgeIcon, ClockIcon, CopyIcon, DownloadIcon, QrIcon, RefreshIcon, SparkIcon } from "./icons";
+import { RowMenu } from "./RowMenu";
+import { StatusPill } from "./StatusPill";
 import { useToast } from "./Toast";
 
 const QUICK_AMOUNTS = [1000, 2500, 10000, 25000, 50000];
+const idr = new Intl.NumberFormat("id-ID");
 
 export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
   const toast = useToast();
@@ -79,25 +83,40 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
     }
   }
 
+  async function copyValue(label: string, value: string) {
+    const ok = await copyText(value);
+    toast(ok ? `${label} disalin.` : `Gagal menyalin ${label}.`, ok ? "success" : "error");
+  }
+
   const noQris = qris !== null && qris.length === 0;
+  const typed = digitsOnly(amount);
 
   return (
     <>
       <div className="split">
         <section className="card">
+          <div className="card-head">
+            <h2>
+              <QrIcon size={26} />
+              QRIS
+            </h2>
+          </div>
+
           <form onSubmit={submit} noValidate>
-            <label className="field">
-              <span className="label">QRIS</span>
-              <select className="select" value={qrisId} onChange={(e) => setQrisId(e.target.value)} disabled={!qris?.length}>
-                {qris === null && <option value="">Memuat…</option>}
-                {noQris && <option value="">Belum ada QRIS aktif</option>}
-                {qris?.map((q) => (
-                  <option key={q.id} value={q.id}>
-                    {q.displayName} · {q.provider.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="field">
+              <div className="select-wrap">
+                <CardIcon size={20} />
+                <select className="select" aria-label="Pilih QRIS" value={qrisId} onChange={(e) => setQrisId(e.target.value)} disabled={!qris?.length}>
+                  {qris === null && <option value="">Memuat…</option>}
+                  {noQris && <option value="">Belum ada QRIS aktif</option>}
+                  {qris?.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.displayName} · {q.provider.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
             <label className="field" style={{ marginBottom: 0 }}>
               <span className="label">Nominal</span>
@@ -116,20 +135,21 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
 
             <div className="chips">
               {QUICK_AMOUNTS.map((n) => (
-                <button key={n} type="button" className="chip" onClick={() => setAmount(formatAmountInput(String(n)))}>
-                  {new Intl.NumberFormat("id-ID").format(n)}
+                <button key={n} type="button" className="chip" aria-pressed={typed === String(n)} onClick={() => setAmount(formatAmountInput(String(n)))}>
+                  {idr.format(n)}
                 </button>
               ))}
             </div>
 
             <label className="field">
               <span className="label">
-                Keterangan <span className="opt">opsional</span>
+                Keterangan <span className="opt">Opsional</span>
               </span>
               <input className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={25} placeholder="INV-001" />
             </label>
 
             <button className="btn btn-primary btn-block" type="submit" disabled={busy || noQris}>
+              <SparkIcon size={18} />
               {busy ? "Memproses…" : "Generate QR"}
             </button>
 
@@ -151,8 +171,11 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
 
         <section className="card" ref={resultRef} aria-live="polite">
           <div className="card-head">
-            <h2>Hasil</h2>
-            <span className="hint">{result ? result.status.toLowerCase() : "belum ada"}</span>
+            <h2>
+              {result ? <CheckBadgeIcon size={26} /> : <QrIcon size={26} />}
+              Hasil
+            </h2>
+            {result ? <StatusPill status={result.status} /> : <span className="hint">belum ada</span>}
           </div>
 
           {result ? (
@@ -169,11 +192,11 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
                 </div>
                 <div>
                   <dt>NMID</dt>
-                  <dd className="mono">{result.merchant.nmid}</dd>
+                  <dd>{result.merchant.nmid}</dd>
                 </div>
                 <div>
                   <dt>Job ID</dt>
-                  <dd className="mono">{result.id}</dd>
+                  <dd className="small">{result.id}</dd>
                 </div>
               </dl>
               <div className="btn-row">
@@ -185,7 +208,8 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
                   <DownloadIcon size={18} />
                   Unduh PNG
                 </a>
-                <button type="button" className="btn btn-ghost" onClick={() => setResult(null)}>
+                <button type="button" className="btn btn-accent" onClick={() => setResult(null)}>
+                  <CopyIcon size={18} />
                   Buat lagi
                 </button>
               </div>
@@ -199,10 +223,14 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
         </section>
       </div>
 
-      <section className="card" style={{ marginTop: 20 }}>
+      <section className="card" style={{ marginTop: 22 }}>
         <div className="card-head">
-          <h2>Riwayat</h2>
-          <button type="button" className="link-btn" onClick={() => void loadJobs()}>
+          <h2>
+            <ClockIcon size={24} />
+            Riwayat
+          </h2>
+          <button type="button" className="link-btn with-icon" onClick={() => void loadJobs()}>
+            <RefreshIcon size={18} />
             Muat ulang
           </button>
         </div>
@@ -218,17 +246,27 @@ export function GeneratorTab({ onGoQris }: { onGoQris: () => void }) {
         {jobs && jobs.length > 0 && (
           <ul className="list">
             {jobs.map((j) => (
-              <li key={j.id} className="row">
+              <li key={j.id} className="row row-tx">
+                <span className="row-ico" aria-hidden="true">
+                  <QrIcon size={22} />
+                </span>
                 <div className="row-main">
                   <div className="row-title">
-                    {j.merchant.name}
-                    <span className="pill">{j.status}</span>
+                    <span>{j.merchant.name}</span>
+                    <StatusPill status={j.status} />
                   </div>
                   <div className="row-meta">
                     {fmtDate(j.createdAt)} · {j.merchant.nmid}
                   </div>
                 </div>
                 <span className="row-amount">{rupiah(j.amount)}</span>
+                <RowMenu
+                  label={`Aksi transaksi ${rupiah(j.amount)}`}
+                  actions={[
+                    { label: "Salin Job ID", onSelect: () => void copyValue("Job ID", j.id) },
+                    { label: "Salin NMID", onSelect: () => void copyValue("NMID", j.merchant.nmid) },
+                  ]}
+                />
               </li>
             ))}
           </ul>

@@ -45,9 +45,9 @@ export function AuthView({ onAuthed }: { onAuthed: () => void | Promise<void> })
   return (
     <main className="auth">
       <aside className="auth-art" aria-hidden="true">
-        <Logo variant="wordmark" height={64} />
-        <div className="art-mark">
-          <Logo variant="mark" height={340} />
+        <Logo variant="full" height={64} />
+        <div className="art-sil">
+          <Logo variant="mark" height={600} />
         </div>
         <blockquote>
           <p>Payments, made effortless.</p>
@@ -61,7 +61,7 @@ export function AuthView({ onAuthed }: { onAuthed: () => void | Promise<void> })
 
       <section className="auth-panel">
         <div className="auth-box fade-in">
-          <Logo variant="full" height={64} />
+          <Logo variant="full" height={56} className="auth-logo" />
 
           <h1>{mode === "login" ? "Selamat datang kembali" : "Mulai terima pembayaran"}</h1>
           <p className="sub">
