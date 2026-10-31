@@ -1,0 +1,15 @@
+FROM rust:1-slim-bookworm AS builder
+WORKDIR /app
+COPY services/qr-engine ./services/qr-engine
+RUN cargo build --release --manifest-path services/qr-engine/Cargo.toml
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/services/qr-engine/target/release/qr-engine /usr/local/bin/qr-engine
+ENV QR_ENGINE_PORT=8081
+EXPOSE 8081
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8081/health || exit 1
+CMD ["qr-engine"]

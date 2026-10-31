@@ -1,0 +1,7 @@
+**/node_modules
+**/dist
+services/qr-engine/target
+**/var/
+*.log
+.git
+.gitignore

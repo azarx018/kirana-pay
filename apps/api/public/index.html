@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kirana Pay — Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M10 8v16M22 8l-8 8 8 8' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M10 8v16M22 8l-8 8 8 8" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div>
+          <h1>Kirana Pay</h1>
+          <p>Payments, Made Effortless.</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span class="badge">MVP 0.1</span>
+        <label class="key-field" title="API key dikirim sebagai header x-api-key">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 10V8a5 5 0 0110 0v2M6 10h12v10H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <input id="apiKey" type="password" placeholder="API key" autocomplete="off" spellcheck="false" />
+        </label>
+        <button id="saveKey" class="btn ghost" type="button">Simpan</button>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <div class="grid">
+        <section class="card">
+          <div class="card-head">
+            <h2>Buat QR checkout</h2>
+            <span class="hint">QRIS statis → nominal tetap</span>
+          </div>
+
+          <form id="form" novalidate>
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Pilih gambar QRIS">
+              <input id="file" type="file" accept="image/png,image/jpeg" hidden />
+              <div id="dropEmpty" class="drop-empty">
+                <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4l4 4M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <strong>Drop gambar QRIS di sini</strong>
+                <span>atau klik untuk pilih · PNG / JPEG · maks 5 MB</span>
+              </div>
+              <div id="dropPreview" class="drop-preview" hidden>
+                <img id="preview" alt="Preview QRIS" />
+                <div class="preview-meta">
+                  <span id="fileName">-</span>
+                  <button type="button" id="clearFile" class="link">Ganti</button>
+                </div>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>Nominal</span>
+              <div class="amount-row">
+                <span class="prefix">Rp</span>
+                <input id="amount" type="text" inputmode="numeric" placeholder="0" autocomplete="off" />
+              </div>
+            </label>
+            <div class="chips" id="chips">
+              <button type="button" data-amount="1000">1.000</button>
+              <button type="button" data-amount="2500">2.500</button>
+              <button type="button" data-amount="10000">10.000</button>
+              <button type="button" data-amount="25000">25.000</button>
+            </div>
+
+            <label class="field">
+              <span>Keterangan <em>opsional</em></span>
+              <input id="note" type="text" maxlength="25" placeholder="INV-001" autocomplete="off" />
+            </label>
+
+            <button id="submit" class="btn primary" type="submit">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M4 12l16-8-6 16-2-6-8-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+              Generate QR
+            </button>
+
+            <p id="error" class="error" role="alert" hidden></p>
+          </form>
+        </section>
+
+        <section class="card result">
+          <div class="card-head">
+            <h2>Hasil</h2>
+            <span class="hint" id="resultStatus">belum ada</span>
+          </div>
+
+          <div id="empty" class="empty">
+            <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            <p>QR hasil generate muncul di sini</p>
+          </div>
+
+          <div id="result" hidden>
+            <div class="qr-frame"><img id="qrImg" alt="QR checkout" /></div>
+            <div class="result-amount" id="resultAmount">Rp0</div>
+            <dl class="kv">
+              <div><dt>Merchant</dt><dd id="resultMerchant">-</dd></div>
+              <div><dt>NMID</dt><dd id="resultNmid" class="mono">-</dd></div>
+              <div><dt>Job ID</dt><dd id="resultId" class="mono small">-</dd></div>
+            </dl>
+            <div class="actions">
+              <a id="download" class="btn secondary" download="qris-checkout.png">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 18h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Unduh PNG
+              </a>
+              <button id="again" class="btn ghost" type="button">Buat lagi</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card history">
+        <div class="card-head">
+          <h2>Riwayat</h2>
+          <button id="refresh" class="link" type="button">Muat ulang</button>
+        </div>
+        <div id="historyEmpty" class="empty small-empty"><p>Belum ada transaksi.</p></div>
+        <ul id="history" class="history-list" hidden></ul>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

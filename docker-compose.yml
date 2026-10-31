@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kirana
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-kirana}
+      POSTGRES_DB: kirana_pay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kirana -d kirana_pay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  qr-engine:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.qr-engine
+    restart: unless-stopped
+    environment:
+      QR_ENGINE_PORT: 8081
+      QR_ENGINE_MAX_IMAGE_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
+      QR_ENGINE_MIN_AMOUNT: ${MIN_AMOUNT:-1}
+      QR_ENGINE_MAX_AMOUNT: ${MAX_AMOUNT:-100000000}
+    # deliberately no host port: internal network only
+    expose:
+      - "8081"
+
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      API_KEY: ${API_KEY:-dev-local-key}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
+      MIN_AMOUNT: ${MIN_AMOUNT:-1}
+      MAX_AMOUNT: ${MAX_AMOUNT:-100000000}
+      QR_ENGINE_URL: http://qr-engine:8081
+      QR_ENGINE_TIMEOUT_MS: 5000
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /app/var/qr
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: kirana
+      DB_PASSWORD: ${DB_PASSWORD:-kirana}
+      DB_NAME: kirana_pay
+      DB_SYNCHRONIZE: "true"
+    ports:
+      - "${API_HOST_PORT:-3200}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qr-engine:
+        condition: service_started
+    volumes:
+      - qrdata:/app/var/qr
+
+volumes:
+  pgdata:
+  qrdata:

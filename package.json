@@ -1,0 +1,14 @@
+{
+  "name": "kirana-pay",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "pnpm --filter @kirana-pay/api start:dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:e2e": "bash scripts/e2e.sh",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format"
+  }
+}
