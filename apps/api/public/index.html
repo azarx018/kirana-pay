@@ -8,19 +8,26 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M10 8v16M22 8l-8 8 8 8' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
+    <header class="navbar">
+      <a class="brand" href="/">
         <span class="mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M10 8v16M22 8l-8 8 8 8" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg viewBox="0 0 32 32" width="26" height="26"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M10 8v16M22 8l-8 8 8 8" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </span>
-        <div>
-          <h1>Kirana Pay</h1>
-          <p id="brandSub">Payments, Made Effortless.</p>
-        </div>
-      </div>
-      <div class="topbar-right" id="topbarAuth" hidden>
-        <span class="badge" id="merchantBadge">—</span>
-        <button class="btn ghost" id="logout" type="button">Keluar</button>
+        <span class="brand-text">
+          <strong>Kirana Pay</strong>
+          <small id="brandSub">Payments, Made Effortless.</small>
+        </span>
+      </a>
+
+      <nav class="nav-links" id="navLinks" hidden>
+        <button class="nav-link active" data-tab="generator" type="button">Generator</button>
+        <button class="nav-link" data-tab="qris" type="button">QRIS</button>
+        <button class="nav-link" data-tab="settings" type="button">Pengaturan</button>
+      </nav>
+
+      <div class="nav-right" id="topbarAuth" hidden>
+        <span class="nav-merchant" id="merchantBadge">—</span>
+        <button class="btn ghost btn-sm" id="logout" type="button">Keluar</button>
       </div>
     </header>
 
@@ -53,17 +60,16 @@
 
     <!-- ============ APP ============ -->
     <main class="wrap" id="appView" hidden>
-      <nav class="tabs">
-        <button class="tab active" data-tab="generator" type="button">Generator</button>
-        <button class="tab" data-tab="qris" type="button">QRIS Saya</button>
-        <button class="tab" data-tab="settings" type="button">Pengaturan</button>
-      </nav>
-
       <!-- Generator -->
       <section class="panel" id="tab-generator">
+        <div class="page-head">
+          <div>
+            <h2>Generator QR</h2>
+            <p>Ubah QRIS statis jadi QR dengan nominal tetap.</p>
+          </div>
+        </div>
         <div class="grid">
           <div class="card">
-            <div class="card-head"><h2>Buat QR checkout</h2><span class="hint">Nominal tetap</span></div>
             <form id="genForm">
               <label class="field">
                 <span>QRIS</span>
@@ -119,9 +125,15 @@
 
       <!-- QRIS -->
       <section class="panel" id="tab-qris" hidden>
+        <div class="page-head">
+          <div>
+            <h2>QRIS Saya</h2>
+            <p>Simpan beberapa QRIS statis, masing-masing dengan provider dan nama sendiri.</p>
+          </div>
+        </div>
         <div class="grid">
           <div class="card">
-            <div class="card-head"><h2>Tambah QRIS</h2><span class="hint">Static QRIS milik merchant</span></div>
+            <div class="card-head"><h2>Tambah QRIS</h2></div>
             <form id="qrisForm">
               <div id="qrisDropzone" class="dropzone" tabindex="0" role="button">
                 <input id="qrisFile" type="file" accept="image/png,image/jpeg" hidden />
@@ -146,7 +158,7 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h2>QRIS terdaftar</h2><span class="hint" id="qrisCount">0</span></div>
+            <div class="card-head"><h2>Terdaftar</h2><span class="hint" id="qrisCount">0</span></div>
             <div id="qrisEmpty" class="empty small-empty"><p>Belum ada QRIS.</p></div>
             <ul id="qrisList" class="qris-list" hidden></ul>
           </div>
@@ -155,6 +167,12 @@
 
       <!-- Settings -->
       <section class="panel" id="tab-settings" hidden>
+        <div class="page-head">
+          <div>
+            <h2>Pengaturan</h2>
+            <p>Profil merchant dan kredensial API.</p>
+          </div>
+        </div>
         <div class="grid">
           <div class="card">
             <div class="card-head"><h2>Profil merchant</h2><span class="hint" id="settingsRole">-</span></div>
@@ -168,11 +186,32 @@
           </div>
 
           <div class="card">
-            <div class="card-head"><h2>API key</h2><button id="newKey" class="link" type="button">+ Buat key</button></div>
-            <div id="keyOnce" class="key-once" hidden>
-              <strong>Salin sekarang — hanya tampil sekali:</strong>
-              <code id="keyOnceValue"></code>
+            <div class="card-head"><h2>API key</h2></div>
+            <p class="card-help">
+              API key dipakai server/aplikasi kamu untuk memanggil API tanpa login —
+              dikirim di header <code>x-api-key</code>. Simpan di server, jangan di browser.
+            </p>
+
+            <div class="key-create">
+              <input id="keyName" maxlength="60" placeholder="Nama key, mis. server-produksi" />
+              <button id="newKey" class="btn secondary btn-sm" type="button">Buat key</button>
             </div>
+
+            <div id="keyOnce" class="key-once" hidden>
+              <div class="key-once-head">
+                <strong>Key baru — salin sekarang, tidak bisa dilihat lagi</strong>
+                <button class="link" id="dismissKey" type="button">Sembunyikan</button>
+              </div>
+              <code id="keyOnceValue"></code>
+              <div class="key-once-actions">
+                <button class="btn secondary btn-sm" id="copyKey" type="button">Salin key</button>
+                <span class="key-hint" id="copyHint"></span>
+              </div>
+              <pre class="code-snippet">curl -X POST https://&lt;domain&gt;/v1/qr/convert \
+  -H "x-api-key: &lt;KEY&gt;" \
+  -F "qrisId=&lt;id&gt;" -F "amount=2300"</pre>
+            </div>
+
             <div id="keysEmpty" class="empty small-empty"><p>Belum ada API key.</p></div>
             <ul id="keysList" class="history-list" hidden></ul>
           </div>

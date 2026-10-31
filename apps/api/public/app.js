@@ -1,8 +1,17 @@
 const $ = (id) => document.getElementById(id);
+function toast(msg) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add("show"), 10);
+  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 4200);
+}
+
 const rupiah = (n) => "Rp" + new Intl.NumberFormat("id-ID").format(n);
 const fmtDate = (iso) => new Date(iso).toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
-const state = { me: null, providers: [], qris: [], jobs: [], keys: [], file: null };
+const state = { me: null, providers: [], qris: [], jobs: [], keys: [], file: null, keyPlain: null };
 
 async function api(path, options = {}) {
   const res = await fetch(path, { credentials: "same-origin", ...options });
@@ -76,17 +85,21 @@ $("logout").addEventListener("click", async () => {
   state.me = null;
   $("appView").hidden = true;
   $("topbarAuth").hidden = true;
+  $("navLinks").hidden = true;
+  hideKeyOnce();
   $("authView").hidden = false;
   $("brandSub").textContent = "Payments, Made Effortless.";
 });
 
 /* ---------------- tabs ---------------- */
-document.querySelectorAll(".tab").forEach((btn) => {
+document.querySelectorAll(".nav-link").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".nav-link").forEach((b) => b.classList.toggle("active", b === btn));
     for (const name of ["generator", "qris", "settings"]) {
       $(`tab-${name}`).hidden = name !== btn.dataset.tab;
     }
+    hideKeyOnce();
+    history.replaceState(null, "", `#${btn.dataset.tab}`);
   });
 });
 
@@ -264,7 +277,7 @@ async function loadQris() {
           await api(`/v1/qris/${btn.dataset.replace}/image`, { method: "PUT", body });
           await loadQris();
         } catch (err) {
-          alert(`${err.code}: ${err.message}`);
+          toast(`${err.code}: ${err.message}`);
         }
       };
       input.click();
@@ -306,7 +319,7 @@ $("merchantForm").addEventListener("submit", async (e) => {
     $("merchantBadge").textContent = m.name;
     $("merchantMsg").hidden = false;
   } catch (err) {
-    alert(`${err.code}: ${err.message}`);
+    toast(`${err.code}: ${err.message}`);
   }
 });
 
@@ -321,7 +334,7 @@ async function loadKeys() {
     li.innerHTML = `
       <div class="h-left">
         <span class="h-merchant">${escapeHtml(k.name)} <span class="pill ${k.revoked ? "pill-muted" : ""}">${k.revoked ? "REVOKED" : "ACTIVE"}</span></span>
-        <span class="h-meta mono">${escapeHtml(k.prefix)}… · dibuat ${fmtDate(k.createdAt)}</span>
+        <span class="h-meta mono">${escapeHtml(k.prefix)}… · dibuat ${fmtDate(k.createdAt)} · ${k.lastUsedAt ? "dipakai " + fmtDate(k.lastUsedAt) : "belum dipakai"}</span>
       </div>
       ${k.revoked ? "" : `<button class="link danger" data-revoke="${k.id}" type="button">Revoke</button>`}`;
     list.appendChild(li);
@@ -336,21 +349,66 @@ async function loadKeys() {
 }
 
 $("newKey").addEventListener("click", async () => {
-  const name = prompt("Nama key (mis. server-produksi)", "API key");
-  if (name === null) return;
+  const name = ($("keyName").value || "API key").trim();
   try {
     const data = await api("/v1/api-keys", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
     });
+    $("keyName").value = "";
+    state.keyPlain = data.key;
     $("keyOnceValue").textContent = data.key;
+    $("copyHint").textContent = "";
     $("keyOnce").hidden = false;
+    $("keyOnce").scrollIntoView({ block: "nearest", behavior: "smooth" });
     await loadKeys();
   } catch (err) {
-    alert(`${err.code}: ${err.message}`);
+    toast(`${err.code}: ${err.message}`);
   }
 });
+
+/* ---------------- one-time key reveal ---------------- */
+function hideKeyOnce() {
+  state.keyPlain = null;
+  $("keyOnceValue").textContent = "";
+  $("keyOnce").hidden = true;
+  $("copyHint").textContent = "";
+}
+
+$("dismissKey").addEventListener("click", hideKeyOnce);
+
+let copyTimer = null;
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  const ok = document.execCommand("copy");
+  ta.remove();
+  return ok;
+}
+
+$("copyKey").addEventListener("click", async () => {
+  if (!state.keyPlain) return;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(state.keyPlain);
+    ok = true;
+  } catch {
+    ok = legacyCopy(state.keyPlain);
+  }
+  $("copyHint").textContent = ok
+    ? "Tersalin. Tempel di server kamu, lalu sembunyikan."
+    : "Gagal menyalin — blok key lalu Ctrl/Cmd+C.";
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(hideKeyOnce, 60000);
+});
+
+window.addEventListener("beforeunload", hideKeyOnce);
 
 /* ---------------- boot ---------------- */
 async function boot() {
@@ -365,8 +423,8 @@ async function boot() {
   $("authView").hidden = true;
   $("appView").hidden = false;
   $("topbarAuth").hidden = false;
+  $("navLinks").hidden = false;
   $("merchantBadge").textContent = state.me.merchant.name;
-  $("brandSub").textContent = state.me.user.email;
   $("merchantName").value = state.me.merchant.name;
   $("merchantEmail").value = state.me.user.email;
   $("settingsRole").textContent = state.me.merchant.role;
