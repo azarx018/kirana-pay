@@ -1,17 +1,24 @@
 import type { CSSProperties } from "react";
 
 interface LogoProps {
-  variant?: "full" | "mark" | "wordmark";
+  /**
+   * full     = mark + divider + wordmark (login)
+   * compact  = mark + wordmark, no divider (sidebar / top bar)
+   * mark     = illustration only
+   * wordmark = text only
+   */
+  variant?: "full" | "compact" | "mark" | "wordmark";
   /** Height of the whole lockup in px. */
   height?: number;
   className?: string;
 }
 
 /**
- * Kirana Pay logo, rendered with CSS masks so it always follows the theme
- * colour (ink in light mode, cream in dark mode).
+ * Kirana Pay logo, drawn with CSS masks so colours come from theme variables
+ * (--logo-main, --logo-accent, --logo-mark): ivory + champagne on dark
+ * surfaces, obsidian + champagne on light ones.
  */
-export function Logo({ variant = "full", height = 48, className = "" }: LogoProps) {
+export function Logo({ variant = "compact", height = 48, className = "" }: LogoProps) {
   const style = { "--h": `${height}px` } as CSSProperties;
   const cls = `logo logo-${variant} ${className}`.trim();
 

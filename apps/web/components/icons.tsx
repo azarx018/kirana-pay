@@ -75,3 +75,51 @@ export const DownloadIcon = ({ size = 20 }: IconProps) => (
     <path d="M12 4v12M7 11l5 5 5-5M4.5 15v2.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5V15" />
   </svg>
 );
+
+export const SparkIcon = ({ size = 20 }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
+    <path d="M19 15v4M17 17h4" />
+  </svg>
+);
+
+export const CheckBadgeIcon = ({ size = 26 }: IconProps) => (
+  <svg className="check-badge" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="11" fill="currentColor" />
+    <path
+      d="M7.5 12.5l3 3 6-6.5"
+      fill="none"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ stroke: "var(--surface)" }}
+    />
+  </svg>
+);
+
+export const ClockIcon = ({ size = 24 }: IconProps) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 7.5V12l3 2" />
+  </svg>
+);
+
+export const RefreshIcon = ({ size = 18 }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" />
+  </svg>
+);
+
+export const ChevronRightIcon = ({ size = 18 }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="m9 6 6 6-6 6" />
+  </svg>
+);
+
+export const MoreIcon = ({ size = 18 }: IconProps) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="5.5" r="1.3" fill="currentColor" />
+    <circle cx="12" cy="12" r="1.3" fill="currentColor" />
+    <circle cx="12" cy="18.5" r="1.3" fill="currentColor" />
+  </svg>
+);
