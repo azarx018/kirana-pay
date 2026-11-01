@@ -1,6 +1,12 @@
 import type { Metadata, Viewport } from "next";
+import { DM_Serif_Display, Plus_Jakarta_Sans } from "next/font/google";
 import type { ReactNode } from "react";
 import "./globals.css";
+
+// Plus Jakarta Sans: dashboard, navigasi, tabel, form.
+const sans = Plus_Jakarta_Sans({ subsets: ["latin"], display: "swap", variable: "--font-sans-loaded" });
+// DM Serif Display: heading & halaman login.
+const serif = DM_Serif_Display({ subsets: ["latin"], weight: "400", display: "swap", variable: "--font-serif-loaded" });
 
 export const metadata: Metadata = {
   title: "Kirana Pay",
@@ -13,8 +19,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f3ec" },
-    { media: "(prefers-color-scheme: dark)", color: "#0f0e0c" },
+    { media: "(prefers-color-scheme: light)", color: "#f7f6f3" },
+    { media: "(prefers-color-scheme: dark)", color: "#121212" },
   ],
 };
 
@@ -23,7 +29,7 @@ const themeScript = `(function(){try{var t=localStorage.getItem('kp-theme');if(!
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="id" suppressHydrationWarning>
+    <html lang="id" className={`${sans.variable} ${serif.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
