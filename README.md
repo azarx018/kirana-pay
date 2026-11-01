@@ -97,6 +97,13 @@ docker compose ps
 Services: `api` (host port `${API_HOST_PORT:-3200}`), `qr-engine` and `postgres` (internal only).
 Runbook, Tailscale access and ops commands: `docs/deploy.md`.
 
+## Payment links (MVP V3)
+
+`POST /v1/invoices/:id/payment-link` creates a public, revocable URL (`<PUBLIC_BASE_URL>/pay/<token>`) for an
+existing invoice. The customer opens it without an account and sees the amount, expiry and the invoice QR
+while it is payable. Opening or refreshing the page never marks anything as paid. Set `PUBLIC_BASE_URL` and
+`PAYMENT_LINK_SECRET` (see `.env.example`). Details: `docs/api.md`, `docs/v3/`.
+
 ## Known limitations
 
 - **QR generation is not proof of payment acceptance.** Provider selection is merchant-supplied
@@ -104,4 +111,4 @@ Runbook, Tailscale access and ops commands: `docs/deploy.md`.
 - Password reset is not implemented (no email delivery in this deployment).
 - Sessions are DB-backed cookies; CSRF relies on SameSite=Lax + JSON/multipart APIs.
 - `var/qr` local storage is the MVP driver; the `FileStorage` interface is swappable for S3.
-- No payment status, webhooks, invoices or payment links yet (out of scope for v1).
+- No webhooks and no automatic payment detection yet: an invoice only becomes `PAID` through manual merchant confirmation.

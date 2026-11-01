@@ -26,6 +26,7 @@ cd "$ROOT"
 QR_ENGINE_PORT="$ENGINE_PORT" ./services/qr-engine/target/debug/qr-engine >/tmp/kirana-engine.log 2>&1 &
 ENGINE_PID=$!
 ( cd "$ROOT/apps/api" && QR_ENGINE_URL="http://127.0.0.1:$ENGINE_PORT" PORT="$API_PORT" \
+  PUBLIC_BASE_URL="http://pay.e2e.test" PAYMENT_LINK_SECRET="e2e-payment-link-secret-not-for-prod-0123456789" \
   DB_HOST="${DB_HOST:-127.0.0.1}" DB_USER="${DB_USER:-kirana}" DB_PASSWORD="${DB_PASSWORD:-kirana}" \
   DB_NAME="${DB_NAME:-kirana_pay}" exec node dist/main.js >/tmp/kirana-api.log 2>&1 ) &
 API_PID=$!
@@ -200,6 +201,162 @@ CODE=$(curl -s -o /tmp/inv_gone.json -w '%{http_code}' -b "$JAR_A" -X POST "$BAS
 [ "$CODE" = "410" ] || fail "expired invoice confirmed ($CODE)"
 grep -q 'INVOICE_EXPIRED' /tmp/inv_gone.json || fail "wrong code for expired invoice"
 curl -sf -b "$JAR_A" "$BASE/v1/invoices/$EXP_INV" | python3.12 -c 'import sys,json; d=json.load(sys.stdin)["data"]; assert d["status"]=="EXPIRED", d; print("    expiry enforced")'
+
+echo "==> payment links (MVP V3)"
+db() { PGPASSWORD="${DB_PASSWORD:-kirana}" psql -h "${DB_HOST:-127.0.0.1}" -p "${DB_PORT:-5432}" -U "${DB_USER:-kirana}" -d "${DB_NAME:-kirana_pay}" -tAc "$1"; }
+chk() { python3.12 - "$1" "$2" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+assert eval(sys.argv[2], {"d": d, "os": os}), (sys.argv[2], d)
+PY
+}
+mk_invoice() {
+  curl -sf -b "$JAR_A" -X POST "$BASE/v1/invoices" -H 'content-type: application/json' \
+    -d "{\"amount\":$1,\"description\":\"$2\",\"qrisId\":\"$QRIS_ID\",\"expiresInMinutes\":15}" \
+    | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"]["publicId"])'
+}
+link_count() { db "SELECT count(*) FROM payment_links WHERE \"invoiceId\" = (SELECT id FROM invoices WHERE \"publicId\" = '$1') AND ($2)"; }
+pub() { curl -s -o "$2" -w '%{http_code}' "$BASE/v1/public/payment-links/$1"; }
+
+export PL1; PL1=$(mk_invoice 11000 '<img src=x onerror=alert(1)> kopi')
+[ -n "$PL1" ] || fail "payment link invoice"
+
+for m in POST GET DELETE; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -X "$m" "$BASE/v1/invoices/$PL1/payment-link")
+  [ "$CODE" = "401" ] || fail "anonymous $m payment-link ($CODE)"
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $KEY_A" -X "$m" "$BASE/v1/invoices/$PL1/payment-link")
+  [ "$CODE" = "401" ] || fail "api key $m payment-link ($CODE)"
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_B" -X "$m" "$BASE/v1/invoices/$PL1/payment-link")
+  [ "$CODE" = "404" ] || fail "cross-tenant $m payment-link ($CODE)"
+done
+[ "$(link_count "$PL1" true)" = "0" ] || fail "link rows created by rejected callers"
+echo "    anonymous / api key / other tenant rejected"
+
+CODE=$(curl -s -o /tmp/pl_create.json -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL1/payment-link")
+[ "$CODE" = "201" ] || fail "create payment link ($CODE)"
+chk /tmp/pl_create.json 'd["success"] and d["data"]["created"] is True and d["data"]["link"]["status"]=="ACTIVE" and set(d["data"]["link"])=={"status","url","createdAt","createdBy","revokedAt","revokedBy"}'
+PL_URL=$(python3.12 -c 'import json; print(json.load(open("/tmp/pl_create.json"))["data"]["link"]["url"])')
+echo "$PL_URL" | grep -Eq '^http://pay\.e2e\.test/pay/[A-Za-z0-9_-]{44}$' || fail "payment link url shape ($PL_URL)"
+PL_TOKEN="${PL_URL##*/}"
+CODE=$(curl -s -o /tmp/pl_again.json -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL1/payment-link")
+[ "$CODE" = "200" ] || fail "repeat create should be 200 ($CODE)"
+chk /tmp/pl_again.json "d['data']['created'] is False and d['data']['link']['url']=='$PL_URL'"
+curl -sf -b "$JAR_A" "$BASE/v1/invoices/$PL1/payment-link" >/tmp/pl_get.json || fail "get payment link"
+chk /tmp/pl_get.json "d['data']['link']['url']=='$PL_URL' and d['data']['link']['createdBy']['email']=='$A_EMAIL'"
+[ "$(link_count "$PL1" true)" = "1" ] || fail "repeat create made a second link"
+echo "    create + idempotent repeat + get ok"
+
+PL2=$(mk_invoice 12000 'konkuren')
+PAR_PIDS=()
+for i in $(seq 1 10); do
+  curl -s -o "/tmp/pl_par_$i.json" -w '%{http_code}\n' -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL2/payment-link" &
+  PAR_PIDS+=($!)
+done >/tmp/pl_par_codes.txt
+# wait only for the curls: a bare `wait` would also block on the API/engine started above
+wait "${PAR_PIDS[@]}"
+python3.12 - <<'PY'
+import json
+codes = open("/tmp/pl_par_codes.txt").read().split()
+assert len(codes) == 10 and set(codes) <= {"200", "201"}, codes
+assert codes.count("201") == 1, codes
+urls = {json.load(open(f"/tmp/pl_par_{i}.json"))["data"]["link"]["url"] for i in range(1, 11)}
+assert len(urls) == 1, urls
+PY
+[ "$(link_count "$PL2" "\"status\" = 'ACTIVE'")" = "1" ] || fail "concurrent creates left more than one active link"
+if db "INSERT INTO payment_links (\"invoiceId\", \"tokenNonce\") SELECT id, 'ZZZZZZZZZZZZZZZZZZZZZZ' FROM invoices WHERE \"publicId\" = '$PL2'" >/dev/null 2>&1; then
+  fail "database allowed a second active link"
+fi
+echo "    10 concurrent creates -> exactly one active link (db enforced)"
+
+CODE=$(curl -s -D /tmp/pl_pub.hdr -o /tmp/pl_pub.json "$BASE/v1/public/payment-links/$PL_TOKEN" -w '%{http_code}')
+[ "$CODE" = "200" ] || fail "public resolve ($CODE)"
+grep -qi '^cache-control: no-store' /tmp/pl_pub.hdr || fail "public response is cacheable"
+grep -qi '^x-robots-tag: noindex' /tmp/pl_pub.hdr || fail "public response is indexable"
+chk /tmp/pl_pub.json 'set(d["data"])=={"state","merchantName","invoice","qrImageDataUrl","serverTime"} and d["data"]["state"]=="PAYABLE" and d["data"]["merchantName"]=="Toko A" and d["data"]["invoice"]["reference"]==os.environ["PL1"] and d["data"]["invoice"]["amount"]==11000 and d["data"]["invoice"]["description"].startswith("<img") and set(d["data"]["invoice"])=={"reference","description","amount","currency","createdAt","expiresAt","paidAt"}'
+python3.12 - <<'PY'
+import base64, json
+url = json.load(open("/tmp/pl_pub.json"))["data"]["qrImageDataUrl"]
+assert url.startswith("data:image/png;base64,"), url[:30]
+assert base64.b64decode(url.split(",", 1)[1])[:8] == b"\x89PNG\r\n\x1a\n", "public QR is not a PNG"
+PY
+if grep -Eq "$A_EMAIL|passwordHash|qrPath|merchantId|qrisId|ID9999999999999|var/qr" /tmp/pl_pub.json; then
+  fail "public payload leaks private data"
+fi
+echo "    public page data ok (no auth, no-store, noindex, no private fields)"
+
+FORGED="${PL_TOKEN:0:43}$([ "${PL_TOKEN:43:1}" = "A" ] && echo B || echo A)"
+FIRST=""
+for t in "$FORGED" "$(printf 'A%.0s' $(seq 1 44))" "short" "$PL1" "$(python3.12 -c 'print("x"*500)')"; do
+  CODE=$(pub "$t" /tmp/pl_bad.json)
+  [ "$CODE" = "404" ] || fail "invalid token answered $CODE"
+  grep -q 'PAYMENT_LINK_UNAVAILABLE' /tmp/pl_bad.json || fail "invalid token wrong error code"
+  [ -n "$FIRST" ] || FIRST=$(cat /tmp/pl_bad.json)
+  [ "$(cat /tmp/pl_bad.json)" = "$FIRST" ] || fail "invalid tokens produce different bodies"
+done
+echo "    forged / malformed / invoice-id tokens -> identical 404"
+
+for m in POST PUT PATCH DELETE; do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -X "$m" "$BASE/v1/public/payment-links/$PL_TOKEN")
+  [ "$CODE" = "404" ] || fail "public endpoint accepted $m ($CODE)"
+done
+curl -sf -b "$JAR_A" "$BASE/v1/invoices/$PL1" | python3.12 -c 'import sys,json; d=json.load(sys.stdin)["data"]; assert d["status"]=="PENDING" and d["paidAt"] is None and [e["type"] for e in d["events"]]==["CREATED"], d'
+echo "    public access never mutates the invoice"
+
+curl -sf -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL1/confirm-payment" >/dev/null || fail "confirm for payment link invoice"
+CODE=$(pub "$PL_TOKEN" /tmp/pl_paid.json)
+[ "$CODE" = "200" ] || fail "paid public resolve ($CODE)"
+chk /tmp/pl_paid.json 'd["data"]["state"]=="PAID" and d["data"]["qrImageDataUrl"] is None and d["data"]["invoice"]["paidAt"]'
+CODE=$(curl -s -o /tmp/pl_paid_create.json -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL1/payment-link")
+[ "$CODE" = "409" ] || fail "create on paid invoice returned $CODE"
+grep -q 'INVOICE_ALREADY_PAID' /tmp/pl_paid_create.json || fail "wrong code for paid invoice"
+curl -sf -b "$JAR_A" -X DELETE "$BASE/v1/invoices/$PL1/payment-link" >/dev/null || fail "revoke on paid invoice"
+CODE=$(pub "$PL_TOKEN" /dev/null)
+[ "$CODE" = "404" ] || fail "revoked link of paid invoice still served ($CODE)"
+echo "    paid: QR hidden, no new link, revoke kills the page"
+
+PL3=$(mk_invoice 13000 'cabut')
+T1=$(curl -sf -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL3/payment-link" | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"]["link"]["url"].rsplit("/",1)[1])')
+[ "$(pub "$T1" /dev/null)" = "200" ] || fail "link not served before revoke"
+CODE=$(curl -s -o /tmp/pl_rev.json -w '%{http_code}' -b "$JAR_A" -X DELETE "$BASE/v1/invoices/$PL3/payment-link")
+[ "$CODE" = "200" ] || fail "revoke ($CODE)"
+chk /tmp/pl_rev.json "d['data']['link']['status']=='REVOKED' and d['data']['link']['url'] is None and d['data']['link']['revokedBy']['email']=='$A_EMAIL'"
+CODE=$(pub "$T1" /tmp/pl_rev_pub.json)
+[ "$CODE" = "404" ] || fail "revoked link still served ($CODE)"
+grep -q 'PAYMENT_LINK_UNAVAILABLE' /tmp/pl_rev_pub.json || fail "revoked link wrong error"
+CODE=$(curl -s -o /tmp/pl_rev2.json -w '%{http_code}' -b "$JAR_A" -X DELETE "$BASE/v1/invoices/$PL3/payment-link")
+[ "$CODE" = "404" ] || fail "second revoke returned $CODE"
+grep -q 'PAYMENT_LINK_NOT_FOUND' /tmp/pl_rev2.json || fail "second revoke wrong code"
+curl -sf -b "$JAR_A" "$BASE/v1/invoices/$PL3/payment-link" | python3.12 -c 'import sys,json; l=json.load(sys.stdin)["data"]["link"]; assert l["status"]=="REVOKED" and l["url"] is None, l'
+T2=$(curl -sf -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL3/payment-link" | python3.12 -c 'import sys,json; d=json.load(sys.stdin)["data"]; assert d["created"] is True; print(d["link"]["url"].rsplit("/",1)[1])')
+[ "$T1" != "$T2" ] || fail "replacement link reused the revoked token"
+[ "$(pub "$T1" /dev/null)" = "404" ] || fail "old token came back to life"
+[ "$(pub "$T2" /dev/null)" = "200" ] || fail "replacement link not served"
+[ "$(link_count "$PL3" true)" = "2" ] && [ "$(link_count "$PL3" "\"status\" = 'ACTIVE'")" = "1" ] && [ "$(link_count "$PL3" "\"revokedByUserId\" IS NOT NULL")" = "1" ] || fail "link history not preserved"
+echo "    revoke -> dead forever; replacement gets a new token; history kept"
+
+PL4=$(mk_invoice 14000 'kedaluwarsa')
+T4=$(curl -sf -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL4/payment-link" | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"]["link"]["url"].rsplit("/",1)[1])')
+db "UPDATE invoices SET \"createdAt\" = now() - interval '2 minutes', \"expiresAt\" = now() - interval '1 minute' WHERE \"publicId\" = '$PL4'" >/dev/null
+CODE=$(pub "$T4" /tmp/pl_exp.json)
+[ "$CODE" = "200" ] || fail "expired public resolve ($CODE)"
+chk /tmp/pl_exp.json 'd["data"]["state"]=="EXPIRED" and d["data"]["qrImageDataUrl"] is None'
+[ "$(db "SELECT status FROM invoices WHERE \"publicId\" = '$PL4'")" = "PENDING" ] || fail "public read persisted EXPIRED (must be read-only)"
+CODE=$(curl -s -o /tmp/pl_exp_create.json -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/invoices/$PL4/payment-link")
+[ "$CODE" = "410" ] || fail "create on expired invoice returned $CODE"
+grep -q 'INVOICE_EXPIRED' /tmp/pl_exp_create.json || fail "wrong code for expired invoice"
+CODE=$(pub "$T4" /tmp/pl_exp2.json)
+chk /tmp/pl_exp2.json 'd["data"]["state"]=="EXPIRED" and d["data"]["qrImageDataUrl"] is None'
+echo "    expiry judged server-side, read-only, QR hidden, create refused (410)"
+
+if grep -qE "$PL_TOKEN|$T1|$T2|$T4" /tmp/kirana-api.log; then fail "a payment link token appears in the API log"; fi
+
+RL=0
+for _ in $(seq 1 75); do
+  C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/public/payment-links/$T2")
+  if [ "$C" = "429" ]; then RL=$((RL + 1)); fi
+done
+[ "$RL" -ge 1 ] || fail "public endpoint is not rate limited"
+echo "    public endpoint rate limited ($RL x 429); tokens absent from logs"
 
 echo "==> revoke + archive"
 KEY_ID=$(curl -sf -b "$JAR_A" "$BASE/v1/api-keys" | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"][0]["id"])')

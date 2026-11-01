@@ -188,6 +188,36 @@ Semantics that the API guarantees:
 Audit: every invoice has append-only `invoice_events` rows (`CREATED`, `PAYMENT_CONFIRMED`,
 `EXPIRED`) with actor and timestamp, returned in the detail payload.
 
+## Payment links (MVP V3)
+
+A payment link is a public, revocable URL for **one existing invoice**. It never creates an invoice and
+never verifies payment. Full contract (field lists, error codes): `docs/v3/CONTRACT.md`.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/v1/invoices/:id/payment-link` | **session only** | create or return the active link (`201` new, `200` existing) |
+| GET | `/v1/invoices/:id/payment-link` | **session only** | latest link (`{ "link": null }` if none) |
+| DELETE | `/v1/invoices/:id/payment-link` | **session only** | revoke the active link, permanently |
+| GET | `/v1/public/payment-links/:token` | none (rate limited 60/min/IP) | customer page data |
+
+Guarantees:
+
+- One ACTIVE link per invoice, enforced by a partial unique index; repeated and concurrent creates return
+  the same link. A revoked link is dead forever; a replacement gets a new token.
+- Creating a link for a `PAID` invoice returns `409 INVOICE_ALREADY_PAID`, for an expired one
+  `410 INVOICE_EXPIRED`. Without `PUBLIC_BASE_URL`/`PAYMENT_LINK_SECRET` in production: `503 PAYMENT_LINK_NOT_CONFIGURED`.
+- Token = 16-byte random nonce + truncated HMAC-SHA256 (44 chars). Only the nonce is stored, so a database
+  leak alone cannot produce a working URL. The MAC is verified before any database access. Changing
+  `PAYMENT_LINK_SECRET` invalidates every existing link.
+- The public endpoint is read-only. State is `PAYABLE`, `PAID` or `EXPIRED`; the QR (`qrImageDataUrl`) is
+  present **only** while `PAYABLE`. Expiry is judged with the database clock and never persisted by a public
+  read. Invalid, malformed, unknown and revoked tokens all return the identical
+  `404 PAYMENT_LINK_UNAVAILABLE`. Responses carry `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`.
+- Only approved fields are exposed (merchant name, invoice reference, description, amount, currency, dates,
+  state, QR). No internal ids, QRIS data, emails or phone numbers.
+- Link audit (creator, revoker, timestamps) lives on `payment_links`; `invoice_events` is unchanged.
+- Environment: `PUBLIC_BASE_URL` (public origin, used to build `/pay/<token>`), `PAYMENT_LINK_SECRET` (>= 32 chars).
+
 ## Tenant isolation
 
 Every merchant-owned query filters by the merchant derived from the credential. Cross-tenant

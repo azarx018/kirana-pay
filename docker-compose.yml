@@ -38,6 +38,9 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       TRUST_PROXY: ${TRUST_PROXY:-}
       ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
+      # Payment links (MVP V3): public origin of the web app and the token HMAC secret.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PAYMENT_LINK_SECRET: ${PAYMENT_LINK_SECRET:-}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
       MIN_AMOUNT: ${MIN_AMOUNT:-1}
       MAX_AMOUNT: ${MAX_AMOUNT:-100000000}

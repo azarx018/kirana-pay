@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKey } from './entities/api-key.entity';
 import { InvoiceEvent } from './entities/invoice-event.entity';
 import { Invoice } from './entities/invoice.entity';
+import { PaymentLink } from './entities/payment-link.entity';
 import { MerchantMember } from './entities/merchant-member.entity';
 import { MerchantQris } from './entities/merchant-qris.entity';
 import { Merchant } from './entities/merchant.entity';
@@ -19,6 +20,8 @@ import { InvoicesModule } from './invoices/invoices.module';
 import { MerchantModule } from './merchant/merchant.module';
 import { InitialMultiTenant1700000000000 } from './migrations/1700000000000-InitialMultiTenant';
 import { Invoices1700000001000 } from './migrations/1700000001000-Invoices';
+import { PaymentLinks1700000002000 } from './migrations/1700000002000-PaymentLinks';
+import { PaymentLinksModule } from './payment-links/payment-links.module';
 import { ProvidersModule } from './providers/providers.module';
 import { QrModule } from './qr/qr.module';
 import { QrJob } from './qr/qr-job.entity';
@@ -49,8 +52,9 @@ import { StorageModule } from './storage/storage.module';
           QrJob,
           Invoice,
           InvoiceEvent,
+          PaymentLink,
         ],
-        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000],
+        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000, PaymentLinks1700000002000],
         migrationsRun: true,
         autoLoadEntities: true,
         synchronize: false,
@@ -64,6 +68,7 @@ import { StorageModule } from './storage/storage.module';
     ApiKeysModule,
     QrModule,
     InvoicesModule,
+    PaymentLinksModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
