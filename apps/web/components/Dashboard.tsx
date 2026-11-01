@@ -8,7 +8,7 @@ import { GeneratorTab } from "./GeneratorTab";
 import { InvoiceTab } from "./InvoiceTab";
 import { QrisTab } from "./QrisTab";
 import { SettingsTab } from "./SettingsTab";
-import { CardIcon, InvoiceIcon, LogoutIcon, QrIcon, SlidersIcon } from "./icons";
+import { CardIcon, ChevronRightIcon, InvoiceIcon, LogoutIcon, QrIcon, SlidersIcon } from "./icons";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -29,8 +29,14 @@ const TABS: TabDef[] = [
   { id: "settings", label: "Pengaturan", title: "Pengaturan", desc: "Profil merchant dan kredensial API.", Icon: SlidersIcon },
 ];
 
-const isTab = (v: string): v is Tab =>
-  v === "generator" || v === "invoice" || v === "qris" || v === "settings";
+const isTab = (v: string): v is Tab => v === "generator" || v === "invoice" || v === "qris" || v === "settings";
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const first = parts[0]?.[0] ?? "K";
+  const second = parts.length > 1 ? parts[1][0] : (parts[0]?.[1] ?? "");
+  return (first + second).toUpperCase();
+}
 
 export function Dashboard() {
   const [me, setMe] = useState<Me | null>(null);
@@ -79,45 +85,47 @@ export function Dashboard() {
   if (!me) return <AuthView onAuthed={loadMe} />;
 
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
-  const initial = (me.merchant.name.trim()[0] ?? "K").toUpperCase();
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <Logo height={56} />
+          <Logo variant="compact" height={84} />
         </div>
 
         <nav className="nav" aria-label="Navigasi utama">
           {TABS.map((t) => (
             <button key={t.id} type="button" className="nav-item" aria-current={tab === t.id ? "page" : undefined} onClick={() => go(t.id)}>
-              <t.Icon size={20} />
+              <t.Icon size={22} />
               {t.label}
             </button>
           ))}
         </nav>
 
+        {/* Decorative silhouette: fills the free space between nav and footer. */}
+        <div className="side-art" aria-hidden="true">
+          <span className="side-sil" />
+        </div>
+
         <div className="side-foot">
-          <div className="merchant">
-            <span className="avatar" aria-hidden="true">{initial}</span>
-            <div className="merchant-meta">
+          <button type="button" className="merchant" onClick={() => go("settings")} aria-label="Buka pengaturan merchant">
+            <span className="avatar" aria-hidden="true">{initials(me.merchant.name)}</span>
+            <span className="merchant-meta">
               <strong>{me.merchant.name}</strong>
               <span>{me.merchant.role}</span>
-            </div>
-          </div>
-          <div className="side-actions">
-            <ThemeToggle />
-            <button type="button" className="btn btn-secondary btn-sm" onClick={logout}>
-              <LogoutIcon size={16} />
-              Keluar
-            </button>
-          </div>
+            </span>
+            <ChevronRightIcon size={18} />
+          </button>
+          <button type="button" className="btn btn-side" onClick={logout}>
+            <LogoutIcon size={18} />
+            Keluar
+          </button>
         </div>
       </aside>
 
-      <div>
+      <div className="content">
         <header className="topbar">
-          <Logo height={40} />
+          <Logo variant="compact" height={44} />
           <div className="actions">
             <ThemeToggle />
             <button type="button" className="icon-btn" onClick={logout} aria-label="Keluar" title="Keluar">
@@ -129,8 +137,11 @@ export function Dashboard() {
         <main className="main">
           <div key={tab} className="fade-in">
             <div className="page-head">
-              <h1>{current.title}</h1>
-              <p>{current.desc}</p>
+              <div>
+                <h1>{current.title}</h1>
+                <p>{current.desc}</p>
+              </div>
+              <ThemeToggle />
             </div>
 
             {tab === "generator" && <GeneratorTab onGoQris={() => go("qris")} />}
