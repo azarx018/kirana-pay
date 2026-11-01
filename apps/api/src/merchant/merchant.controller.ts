@@ -6,6 +6,7 @@ import { Repository } from 'typeorm';
 import { AuthContext } from '../auth/auth.types';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { SessionGuard } from '../auth/session.guard';
+import { assertOwner } from '../common/roles';
 import { Merchant } from '../entities/merchant.entity';
 
 class UpdateMerchantDto {
@@ -48,6 +49,7 @@ export class MerchantController {
     @CurrentAuth() ctx: AuthContext,
     @Body() dto: UpdateMerchantDto,
   ): Promise<{ success: true; data: unknown }> {
+    assertOwner(ctx);
     const merchant = await this.merchants.findOneOrFail({ where: { id: ctx.merchantId } });
     if (dto.name !== undefined) merchant.name = dto.name.trim();
     if (dto.phone !== undefined) merchant.phone = dto.phone.trim() || null;

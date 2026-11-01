@@ -27,7 +27,7 @@ export class ApiKeyOrSessionGuard implements CanActivate {
       if (!key || key.revokedAt) {
         throw new UnauthorizedException({ code: 'UNAUTHORIZED', message: 'Invalid or revoked API key.' });
       }
-      void this.keys.update({ id: key.id }, { lastUsedAt: new Date() });
+      void this.keys.update({ id: key.id }, { lastUsedAt: new Date() }).catch(() => undefined);
       req.auth = {
         userId: '',
         merchantId: key.merchantId,

@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: kirana
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-kirana}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       POSTGRES_DB: kirana_pay
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -35,7 +35,9 @@ services:
     restart: unless-stopped
     environment:
       PORT: 3000
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
       MIN_AMOUNT: ${MIN_AMOUNT:-1}
       MAX_AMOUNT: ${MAX_AMOUNT:-100000000}
@@ -46,11 +48,12 @@ services:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: kirana
-      DB_PASSWORD: ${DB_PASSWORD:-kirana}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       DB_NAME: kirana_pay
       DB_SYNCHRONIZE: "false"
     ports:
-      - "${API_HOST_PORT:-3200}:3000"
+      # loopback only: reach it through the web app / reverse proxy, never directly
+      - "127.0.0.1:${API_HOST_PORT:-3200}:3000"
     depends_on:
       postgres:
         condition: service_healthy

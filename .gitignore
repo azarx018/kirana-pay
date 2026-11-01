@@ -9,3 +9,11 @@ testdata/*.png
 # editor junk
 *.swp
 *.swo
+
+# TLS material (tailscale cert, etc.) - never commit private keys
+*.key
+*.crt
+*.pem
+*.p12
+.env.*
+!.env.example

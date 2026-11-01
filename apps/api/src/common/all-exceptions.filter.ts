@@ -37,7 +37,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
           code = nested.code;
           message = nested.message ?? message;
         } else {
-          message = (body.message as string) ?? message;
+          const raw = body.message;
+          message = Array.isArray(raw) ? raw.join('; ') : ((raw as string | undefined) ?? message);
           code = (body.code as string) ?? (HttpStatus[status] as string) ?? 'ERROR';
         }
       }

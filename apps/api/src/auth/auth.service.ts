@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, LessThan, Repository } from 'typeorm';
 import { MerchantMember } from '../entities/merchant-member.entity';
 import { Merchant } from '../entities/merchant.entity';
 import { Session } from '../entities/session.entity';
@@ -23,6 +23,14 @@ export interface SessionResult {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const ARGON_OPTIONS = { memoryCost: 19456, timeCost: 2, parallelism: 1 };
+
+// Verified against when the email does not exist, so both branches cost the same.
+let dummyHash: Promise<string> | undefined;
+function getDummyHash(): Promise<string> {
+  dummyHash ??= argonHash('kirana-dummy-password-not-used', ARGON_OPTIONS);
+  return dummyHash;
+}
 
 @Injectable()
 export class AuthService {
@@ -50,7 +58,7 @@ export class AuthService {
       throw new ConflictException({ code: 'EMAIL_TAKEN', message: 'Email is already registered.' });
     }
 
-    const passwordHash = await argonHash(input.password, { memoryCost: 19456, timeCost: 2, parallelism: 1 });
+    const passwordHash = await argonHash(input.password, ARGON_OPTIONS);
 
     const userId = await this.dataSource.transaction(async (manager) => {
       const user = manager.create(User, {
@@ -78,8 +86,9 @@ export class AuthService {
   async login(email: string, password: string): Promise<SessionResult> {
     const normalized = this.normalizeEmail(email);
     const user = await this.users.findOne({ where: { email: normalized } });
-    // Constant-ish work either way to avoid trivially revealing which emails exist.
-    const ok = user ? await argonVerify(user.passwordHash, password).catch(() => false) : false;
+    // Same argon2 work whether or not the email exists (no timing oracle).
+    const hashToCheck = user ? user.passwordHash : await getDummyHash();
+    const ok = await argonVerify(hashToCheck, typeof password === 'string' ? password : '').catch(() => false);
     if (!user || !ok) {
       throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Email or password is incorrect.' });
     }
@@ -101,7 +110,9 @@ export class AuthService {
     const member = await this.members.findOne({ where: { userId: session.userId } });
     if (!member) return null;
 
-    void this.sessions.update({ id: session.id }, { lastUsedAt: new Date() });
+    void this.sessions
+      .update({ id: session.id }, { lastUsedAt: new Date() })
+      .catch((e: Error) => this.logger.warn(`lastUsedAt update failed: ${e.message}`));
 
     return {
       userId: session.userId,
@@ -131,6 +142,8 @@ export class AuthService {
     const token = newSessionToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
     await this.sessions.save(this.sessions.create({ userId, tokenHash: sha256(token), expiresAt }));
+    // Opportunistic cleanup: expired sessions were only removed when presented again.
+    await this.sessions.delete({ userId, expiresAt: LessThan(new Date()) }).catch(() => undefined);
 
     const user = await this.users.findOneOrFail({ where: { id: userId } });
     const member = await this.members.findOneOrFail({ where: { userId } });

@@ -4,6 +4,7 @@ import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { AuthContext } from '../auth/auth.types';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { SessionGuard } from '../auth/session.guard';
+import { assertOwner } from '../common/roles';
 import { ApiKeysService } from './api-keys.service';
 
 class CreateApiKeyDto {
@@ -42,6 +43,7 @@ export class ApiKeysController {
     @CurrentAuth() ctx: AuthContext,
     @Body() dto: CreateApiKeyDto,
   ): Promise<{ success: true; data: unknown }> {
+    assertOwner(ctx);
     const { key, plaintext } = await this.service.create(ctx.merchantId, dto.name ?? 'API key');
     return {
       success: true,
@@ -55,6 +57,7 @@ export class ApiKeysController {
     @CurrentAuth() ctx: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ success: true }> {
+    assertOwner(ctx);
     await this.service.revoke(ctx.merchantId, id);
     return { success: true };
   }
@@ -65,6 +68,7 @@ export class ApiKeysController {
     @CurrentAuth() ctx: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ success: true; data: unknown }> {
+    assertOwner(ctx);
     const { key, plaintext } = await this.service.rotate(ctx.merchantId, id);
     return {
       success: true,

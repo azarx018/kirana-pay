@@ -36,7 +36,7 @@ import { StorageModule } from './storage/storage.module';
         host: config.get<string>('DB_HOST', '127.0.0.1'),
         port: Number(config.get<string>('DB_PORT', '5432')),
         username: config.get<string>('DB_USER', 'kirana'),
-        password: config.get<string>('DB_PASSWORD', 'kirana'),
+        password: config.get<string>('DB_PASSWORD', process.env.NODE_ENV === 'production' ? '' : 'kirana'),
         database: config.get<string>('DB_NAME', 'kirana_pay'),
         entities: [
           User,

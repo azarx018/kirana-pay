@@ -19,6 +19,7 @@ import type { Response } from 'express';
 import { AuthContext } from '../auth/auth.types';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { SessionGuard } from '../auth/session.guard';
+import { assertOwner } from '../common/roles';
 import { QrisService, type QrisView } from './qris.service';
 
 const uploadInterceptor = FileInterceptor('file', {
@@ -54,6 +55,7 @@ export class QrisController {
     @Body('providerCode') providerCode: string,
     @Body('displayName') displayName: string,
   ): Promise<{ success: true; data: QrisView }> {
+    assertOwner(ctx);
     if (!providerCode) {
       throw new BadRequestException({ code: 'UNSUPPORTED_PROVIDER', message: 'providerCode is required.' });
     }
@@ -98,7 +100,8 @@ export class QrisController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @UploadedFile() file: Express.Multer.File | undefined,
   ): Promise<{ success: true; data: QrisView }> {
-    return { success: true, data: await this.qris.replaceImage(ctx.merchantId, id, file) };
+    assertOwner(ctx);
+    return { success: true, data: await this.qris.replaceImage(ctx.merchantId, id, file, ctx.userId) };
   }
 
   @Delete(':id')
@@ -107,7 +110,8 @@ export class QrisController {
     @CurrentAuth() ctx: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ success: true }> {
-    await this.qris.archive(ctx.merchantId, id);
+    assertOwner(ctx);
+    await this.qris.archive(ctx.merchantId, id, ctx.userId);
     return { success: true };
   }
 }

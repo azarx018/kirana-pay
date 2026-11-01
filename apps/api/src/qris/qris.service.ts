@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
@@ -27,6 +28,7 @@ export interface QrisView {
 
 @Injectable()
 export class QrisService {
+  private readonly logger = new Logger(QrisService.name);
   private readonly maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES ?? 5 * 1024 * 1024);
 
   constructor(
@@ -104,7 +106,12 @@ export class QrisService {
     return { buffer, path: record.imagePath };
   }
 
-  async replaceImage(merchantId: string, id: string, file: Express.Multer.File | undefined): Promise<QrisView> {
+  async replaceImage(
+    merchantId: string,
+    id: string,
+    file: Express.Multer.File | undefined,
+    actorUserId = '',
+  ): Promise<QrisView> {
     const record = await this.findOne(merchantId, id);
     const { mime, buffer } = this.validateFile(file);
     const meta = await this.inspect(buffer);
@@ -112,20 +119,28 @@ export class QrisService {
     const ext = mime === 'image/png' ? 'png' : 'jpg';
     const imagePath = await this.storage.save(`qris/${merchantId}/${record.id}-${Date.now()}.${ext}`, buffer, mime);
 
+    const previousNmid = record.nmid;
     record.imagePath = imagePath;
     record.imageSha256 = createHash('sha256').update(buffer).digest('hex');
     record.nmid = meta.nmid;
     record.merchantName = meta.merchantName;
     await this.qris.save(record);
 
+    // Changing the QRIS image changes where payments go: always leave a trace.
+    // The previous image file is kept on purpose (evidence if an account is abused).
+    this.logger.warn(
+      `AUDIT qris.replace merchant=${merchantId} qris=${record.id} user=${actorUserId || 'n/a'} nmid:${previousNmid ?? '-'}->${meta.nmid}`,
+    );
+
     const provider = await this.providers.findOneOrFail({ where: { id: record.providerId } });
     return this.toView(record, provider);
   }
 
-  async archive(merchantId: string, id: string): Promise<void> {
+  async archive(merchantId: string, id: string, actorUserId = ''): Promise<void> {
     const record = await this.findOne(merchantId, id);
     record.status = 'ARCHIVED';
     await this.qris.save(record);
+    this.logger.warn(`AUDIT qris.archive merchant=${merchantId} qris=${record.id} user=${actorUserId || 'n/a'}`);
   }
 
   private validateFile(file: Express.Multer.File | undefined): { mime: 'image/png' | 'image/jpeg'; buffer: Buffer } {

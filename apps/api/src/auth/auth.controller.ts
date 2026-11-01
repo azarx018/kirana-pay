@@ -5,6 +5,7 @@ import type { Request, Response } from 'express';
 import { CurrentAuth } from './current-auth.decorator';
 import { AuthService } from './auth.service';
 import type { AuthContext } from './auth.types';
+import { isCookieSecure } from '../common/runtime-config';
 import { LoginDto, RegisterDto } from './dto/auth.dto';
 import { SessionGuard } from './session.guard';
 import { SESSION_COOKIE, SESSION_TTL_DAYS } from './tokens';
@@ -18,7 +19,7 @@ export class AuthController {
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.COOKIE_SECURE === 'true',
+      secure: isCookieSecure(),
       maxAge: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,
       path: '/',
     });
