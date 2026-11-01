@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
 import { api, errMessage } from "@/lib/api";
 import type { Provider, Qris } from "@/lib/types";
-import { UploadIcon } from "./icons";
+import { CardIcon, UploadIcon } from "./icons";
+import { RowMenu, type MenuAction } from "./RowMenu";
+import { StatusPill } from "./StatusPill";
 import { useToast } from "./Toast";
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -127,13 +129,22 @@ export function QrisTab() {
     }
   }
 
+  function actionsFor(q: Qris): MenuAction[] {
+    const list: MenuAction[] = [{ label: "Ganti gambar", onSelect: () => startReplace(q.id) }];
+    if (q.status === "ACTIVE") list.push({ label: "Arsipkan", danger: true, onSelect: () => void archive(q) });
+    return list;
+  }
+
   const active = items?.filter((q) => q.status === "ACTIVE").length ?? 0;
 
   return (
     <div className="split">
       <section className="card">
         <div className="card-head">
-          <h2>Tambah QRIS</h2>
+          <h2>
+            <UploadIcon size={24} />
+            Tambah QRIS
+          </h2>
         </div>
 
         <form onSubmit={submit} noValidate>
@@ -210,7 +221,10 @@ export function QrisTab() {
 
       <section className="card">
         <div className="card-head">
-          <h2>Terdaftar</h2>
+          <h2>
+            <CardIcon size={24} />
+            Terdaftar
+          </h2>
           <span className="hint">
             {active} aktif / {items?.length ?? 0} total
           </span>
@@ -228,28 +242,19 @@ export function QrisTab() {
         {items && items.length > 0 && (
           <ul className="list">
             {items.map((q) => (
-              <li key={q.id} className="row">
+              <li key={q.id} className="row row-tx">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img className="thumb" src={q.imageUrl} alt="" loading="lazy" />
                 <div className="row-main">
                   <div className="row-title">
-                    {q.displayName}
-                    <span className={`pill${q.status === "ARCHIVED" ? " muted" : ""}`}>{q.status}</span>
+                    <span>{q.displayName}</span>
+                    <StatusPill status={q.status} />
                   </div>
                   <div className="row-meta">
                     {q.provider.name} · {q.nmid ?? "-"}
                   </div>
                 </div>
-                <div className="row-actions">
-                  <button type="button" className="link-btn" onClick={() => startReplace(q.id)}>
-                    Ganti
-                  </button>
-                  {q.status === "ACTIVE" && (
-                    <button type="button" className="link-btn danger" onClick={() => void archive(q)}>
-                      Arsip
-                    </button>
-                  )}
-                </div>
+                <RowMenu label={`Aksi ${q.displayName}`} actions={actionsFor(q)} />
               </li>
             ))}
           </ul>
