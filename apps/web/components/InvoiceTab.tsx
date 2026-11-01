@@ -1,10 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, errMessage, jsonInit } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { digitsOnly, fmtDate, formatAmountInput, rupiah } from "@/lib/format";
 import type { Invoice, InvoiceDetail, InvoiceList, Qris } from "@/lib/types";
+import { CardIcon, ChevronRightIcon, CopyIcon, InvoiceIcon, PlusIcon, SparkIcon, XIcon } from "./icons";
+import { StatusPill } from "./StatusPill";
 import { useToast } from "./Toast";
+
+const QUICK_AMOUNTS = [10000, 25000, 50000, 100000];
+const idr = new Intl.NumberFormat("id-ID");
 
 const EXPIRY_PRESETS = [
   { label: "15 menit", value: 15 },
@@ -14,17 +20,18 @@ const EXPIRY_PRESETS = [
   { label: "7 hari", value: 10080 },
 ];
 
+// PENDING = kuning, PAID = hijau, EXPIRED = abu-abu (lihat StatusPill).
 const STATUS_LABEL: Record<Invoice["status"], string> = {
   PENDING: "Menunggu",
   PAID: "Dibayar",
   EXPIRED: "Kedaluwarsa",
 };
 
-const STATUS_CLASS: Record<Invoice["status"], string> = {
-  PENDING: "pill pill-pending",
-  PAID: "pill pill-paid",
-  EXPIRED: "pill muted",
-};
+function eventLabel(type: "CREATED" | "PAYMENT_CONFIRMED" | "EXPIRED"): string {
+  if (type === "CREATED") return "Invoice dibuat (menunggu pembayaran)";
+  if (type === "PAYMENT_CONFIRMED") return "Ditandai dibayar oleh merchant";
+  return "Kedaluwarsa";
+}
 
 export function InvoiceTab() {
   const toast = useToast();
@@ -46,6 +53,8 @@ export function InvoiceTab() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
+
+  const panelRef = useRef<HTMLElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,19 +92,30 @@ export function InvoiceTab() {
     void loadQris();
   }, [loadQris]);
 
-  const openDetail = useCallback(async (publicId: string) => {
-    setDetailLoading(true);
-    setConfirmOpen(false);
-    try {
-      setDetail(await api<InvoiceDetail>(`/v1/invoices/${publicId}`));
-    } catch (err) {
-      toast(errMessage(err), "error");
-    } finally {
-      setDetailLoading(false);
-    }
-  }, [toast]);
+  const openDetail = useCallback(
+    async (publicId: string) => {
+      setDetailLoading(true);
+      setConfirmOpen(false);
+      try {
+        setDetail(await api<InvoiceDetail>(`/v1/invoices/${publicId}`));
+      } catch (err) {
+        toast(errMessage(err), "error");
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [toast],
+  );
 
-  async function submit(e: React.FormEvent) {
+  // Below 1280px the side panel stacks under the list: bring it into view.
+  const panelKey = creating ? "create" : (detail?.publicId ?? null);
+  useEffect(() => {
+    if (panelKey && window.matchMedia("(max-width: 1279px)").matches) {
+      panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [panelKey]);
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setFormError(null);
 
@@ -137,10 +157,7 @@ export function InvoiceTab() {
     if (!detail) return;
     setConfirming(true);
     try {
-      const updated = await api<InvoiceDetail>(
-        `/v1/invoices/${detail.publicId}/confirm-payment`,
-        { method: "POST" },
-      );
+      const updated = await api<InvoiceDetail>(`/v1/invoices/${detail.publicId}/confirm-payment`, { method: "POST" });
       setDetail(updated);
       setConfirmOpen(false);
       toast("Ditandai dibayar oleh merchant.", "success");
@@ -152,22 +169,34 @@ export function InvoiceTab() {
     }
   }
 
+  async function copyId(publicId: string) {
+    const ok = await copyText(publicId);
+    toast(ok ? "ID invoice disalin." : "Gagal menyalin ID invoice.", ok ? "success" : "error");
+  }
+
   const showPanel = creating || !!detail;
+  const typed = digitsOnly(amount);
 
   return (
     <div className={showPanel ? "split" : undefined}>
       <section className="card">
         <div className="card-head">
-          <div>
-            <h2>Invoice</h2>
-            <p className="hint">Tagihan dengan nominal tetap. Status &quot;dibayar&quot; selalu dikonfirmasi manual oleh merchant.</p>
-          </div>
+          <h2>
+            <InvoiceIcon size={24} />
+            Invoice
+          </h2>
           <button type="button" className="btn btn-primary btn-sm" onClick={openCreate} disabled={creating}>
-            + Buat invoice
+            <PlusIcon size={16} />
+            Buat invoice
           </button>
         </div>
+        <p className="help">Tagihan dengan nominal tetap. Status &quot;dibayar&quot; selalu dikonfirmasi manual oleh merchant.</p>
 
-        {listError && <div className="alert">{listError}</div>}
+        {listError && (
+          <p className="alert" role="alert">
+            {listError}
+          </p>
+        )}
 
         {loading ? (
           <div>
@@ -176,15 +205,25 @@ export function InvoiceTab() {
             <div className="skel" />
           </div>
         ) : items.length === 0 ? (
-          <div className="empty">Belum ada invoice. Buat yang pertama untuk mulai menagih.</div>
+          <div className="empty-state">
+            <InvoiceIcon size={34} />
+            <p>Belum ada invoice. Buat yang pertama untuk mulai menagih.</p>
+            <button type="button" className="btn btn-accent btn-sm" onClick={openCreate}>
+              <PlusIcon size={16} />
+              Buat invoice
+            </button>
+          </div>
         ) : (
           <ul className="list">
             {items.map((inv) => (
-              <li key={inv.id} className="row">
+              <li key={inv.id} className="row row-tx" aria-current={detail?.publicId === inv.publicId ? "true" : undefined}>
+                <span className="row-ico" aria-hidden="true">
+                  <InvoiceIcon size={22} />
+                </span>
                 <div className="row-main">
                   <div className="row-title">
-                    <span className="mono">{inv.publicId}</span>
-                    <span className={STATUS_CLASS[inv.status]}>{STATUS_LABEL[inv.status]}</span>
+                    <span className="mono-id">{inv.publicId}</span>
+                    <StatusPill status={inv.status} label={STATUS_LABEL[inv.status]} />
                   </div>
                   <div className="row-meta">
                     {inv.qris.displayName} · {inv.qris.provider.name}
@@ -194,12 +233,15 @@ export function InvoiceTab() {
                     {inv.status === "PENDING" ? `Kedaluwarsa ${fmtDate(inv.expiresAt)}` : `Dibuat ${fmtDate(inv.createdAt)}`}
                   </div>
                 </div>
-                <div className="row-actions">
-                  <span className="row-amount">{rupiah(inv.amount)}</span>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => void openDetail(inv.publicId)}>
-                    Detail
-                  </button>
-                </div>
+                <span className="row-amount">{rupiah(inv.amount)}</span>
+                <button
+                  type="button"
+                  className="icon-btn icon-btn-ghost row-go"
+                  aria-label={`Lihat detail ${inv.publicId}`}
+                  onClick={() => void openDetail(inv.publicId)}
+                >
+                  <ChevronRightIcon size={18} />
+                </button>
               </li>
             ))}
           </ul>
@@ -207,77 +249,97 @@ export function InvoiceTab() {
       </section>
 
       {creating && (
-        <section className="card fade-in">
+        <section className="card fade-in" ref={panelRef}>
           <div className="card-head">
-            <div>
-              <h2>Invoice baru</h2>
-              <p className="hint">QR yang dihasilkan hanya alat tagih — bukan bukti pembayaran.</p>
-            </div>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreating(false)}>
-              Tutup
+            <h2>
+              <SparkIcon size={24} />
+              Invoice baru
+            </h2>
+            <button type="button" className="icon-btn icon-btn-ghost" aria-label="Tutup" onClick={() => setCreating(false)}>
+              <XIcon size={18} />
             </button>
           </div>
+          <p className="help">QR yang dihasilkan hanya alat tagih — bukan bukti pembayaran.</p>
 
-          <form onSubmit={submit}>
-            <label className="field">
-              <span className="label">Nominal (Rp)</span>
-              <input
-                className="input"
-                inputMode="numeric"
-                placeholder="25.000"
-                value={amount}
-                onChange={(e) => setAmount(formatAmountInput(e.target.value))}
-                required
-              />
+          <form onSubmit={submit} noValidate>
+            <label className="field" style={{ marginBottom: 0 }}>
+              <span className="label">Nominal</span>
+              <div className="amount">
+                <span>Rp</span>
+                <input
+                  value={amount}
+                  onChange={(e) => setAmount(formatAmountInput(e.target.value))}
+                  inputMode="numeric"
+                  placeholder="0"
+                  autoComplete="off"
+                  aria-label="Nominal dalam rupiah"
+                />
+              </div>
             </label>
 
-            <label className="field">
-              <span className="label">Deskripsi (opsional)</span>
-              <input
-                className="input"
-                maxLength={200}
-                placeholder="Kopi susu 2 gelas"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </label>
-
-            <label className="field">
-              <span className="label">QRIS</span>
-              <select className="select" value={qrisId} onChange={(e) => setQrisId(e.target.value)} required>
-                <option value="">Pilih QRIS…</option>
-                {qrisList.map((q) => (
-                  <option key={q.id} value={q.id}>
-                    {q.displayName} — {q.provider.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {qrisError && <div className="alert">{qrisError}</div>}
-
-            <label className="field">
-              <span className="label">Berlaku sampai</span>
-              <select className="select" value={expiry} onChange={(e) => setExpiry(Number(e.target.value))}>
-                {EXPIRY_PRESETS.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {formError && <div className="alert">{formError}</div>}
-
-            <div className="btn-row">
-              <button type="submit" className="btn btn-primary" disabled={submitting}>
-                {submitting ? "Membuat…" : "Buat invoice + QR"}
-              </button>
+            <div className="chips">
+              {QUICK_AMOUNTS.map((n) => (
+                <button key={n} type="button" className="chip" aria-pressed={typed === String(n)} onClick={() => setAmount(formatAmountInput(String(n)))}>
+                  {idr.format(n)}
+                </button>
+              ))}
             </div>
+
+            <label className="field">
+              <span className="label">
+                Deskripsi <span className="opt">Opsional</span>
+              </span>
+              <input className="input" maxLength={200} placeholder="Kopi susu 2 gelas" value={description} onChange={(e) => setDescription(e.target.value)} />
+            </label>
+
+            <div className="field">
+              <span className="label">QRIS</span>
+              <div className="select-wrap">
+                <CardIcon size={20} />
+                <select className="select" aria-label="Pilih QRIS" value={qrisId} onChange={(e) => setQrisId(e.target.value)}>
+                  <option value="">Pilih QRIS…</option>
+                  {qrisList.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.displayName} · {q.provider.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {qrisError && (
+                <p className="alert" role="alert">
+                  {qrisError}
+                </p>
+              )}
+            </div>
+
+            <div className="field">
+              <span className="label" id="invoice-expiry-label">
+                Berlaku sampai
+              </span>
+              <div className="chips tight" role="group" aria-labelledby="invoice-expiry-label">
+                {EXPIRY_PRESETS.map((p) => (
+                  <button key={p.value} type="button" className="chip" aria-pressed={expiry === p.value} onClick={() => setExpiry(p.value)}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {formError && (
+              <p className="alert" role="alert">
+                {formError}
+              </p>
+            )}
+
+            <button type="submit" className="btn btn-primary btn-block" disabled={submitting} style={{ marginTop: 18 }}>
+              <SparkIcon size={18} />
+              {submitting ? "Membuat…" : "Buat invoice + QR"}
+            </button>
           </form>
         </section>
       )}
 
-      {detailLoading && !detail && (
+      {detailLoading && !detail && !creating && (
         <section className="card">
           <div className="skel" />
           <div className="skel" />
@@ -285,18 +347,18 @@ export function InvoiceTab() {
       )}
 
       {detail && !creating && (
-        <section className="card fade-in">
+        <section className="card fade-in" ref={panelRef}>
           <div className="card-head">
-            <div>
-              <h2 className="mono">{detail.publicId}</h2>
-              <p className="hint">
-                <span className={STATUS_CLASS[detail.status]}>{STATUS_LABEL[detail.status]}</span>{" "}
-                {detail.status === "PAID" ? "— dikonfirmasi manual oleh merchant" : ""}
-              </p>
+            <h2>
+              <InvoiceIcon size={24} />
+              Detail invoice
+            </h2>
+            <div className="head-actions">
+              <StatusPill status={detail.status} label={STATUS_LABEL[detail.status]} />
+              <button type="button" className="icon-btn icon-btn-ghost" aria-label="Tutup" onClick={() => setDetail(null)}>
+                <XIcon size={18} />
+              </button>
             </div>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDetail(null)}>
-              Tutup
-            </button>
           </div>
 
           {detail.qrUrl ? (
@@ -305,13 +367,15 @@ export function InvoiceTab() {
               <img src={detail.qrUrl} alt={`QR invoice ${detail.publicId}`} />
             </div>
           ) : (
-            <div className="empty">QR tidak tersedia.</div>
+            <p className="empty">QR tidak tersedia.</p>
           )}
+
+          <div className="result-amount">{rupiah(detail.amount)}</div>
 
           <dl className="kv">
             <div>
-              <dt>Nominal</dt>
-              <dd>{rupiah(detail.amount)}</dd>
+              <dt>ID</dt>
+              <dd className="small mono">{detail.publicId}</dd>
             </div>
             <div>
               <dt>QRIS</dt>
@@ -341,23 +405,16 @@ export function InvoiceTab() {
             )}
             {detail.confirmedBy && (
               <div>
-                <dt>Dikonfirmasi oleh</dt>
+                <dt>Dikonfirmasi</dt>
                 <dd>{detail.confirmedBy.email}</dd>
               </div>
             )}
           </dl>
 
-          {detail.status === "PENDING" && !confirmOpen && (
-            <button type="button" className="btn btn-primary btn-block" onClick={() => setConfirmOpen(true)}>
-              Tandai sudah dibayar
-            </button>
-          )}
-
-          {confirmOpen && (
+          {confirmOpen ? (
             <div className="note-box">
               <p>
-                <strong>Konfirmasi manual.</strong> Ini mencatat bahwa kamu (merchant) sudah menerima uangnya.
-                Bukan verifikasi otomatis dari provider — pastikan dana benar-benar masuk dulu.
+                <strong>Konfirmasi manual.</strong> Ini mencatat bahwa kamu (merchant) sudah menerima uangnya. Bukan verifikasi otomatis dari provider — pastikan dana benar-benar masuk dulu.
               </p>
               <div className="btn-row">
                 <button type="button" className="btn btn-primary" onClick={() => void confirmPayment()} disabled={confirming}>
@@ -368,23 +425,31 @@ export function InvoiceTab() {
                 </button>
               </div>
             </div>
+          ) : (
+            <div className="btn-row">
+              {detail.status === "PENDING" && (
+                <button type="button" className="btn btn-primary" onClick={() => setConfirmOpen(true)}>
+                  Tandai sudah dibayar
+                </button>
+              )}
+              <button type="button" className="btn btn-secondary" onClick={() => void copyId(detail.publicId)}>
+                <CopyIcon size={18} />
+                Salin ID
+              </button>
+            </div>
           )}
 
           {detail.events.length > 0 && (
             <>
-              <h3 className="label" style={{ marginTop: 22 }}>
-                Riwayat
-              </h3>
-              <ul className="list">
+              <h3 className="sub-head">Riwayat</h3>
+              <ul className="timeline">
                 {detail.events.map((ev, i) => (
-                  <li key={`${ev.type}-${i}`} className="row">
-                    <div className="row-main">
-                      <div className="row-title">{eventLabel(ev.type)}</div>
-                      <div className="row-meta">
-                        {fmtDate(ev.createdAt)}
-                        {ev.actorEmail ? ` · ${ev.actorEmail}` : ""}
-                      </div>
-                    </div>
+                  <li key={`${ev.type}-${i}`}>
+                    <strong>{eventLabel(ev.type)}</strong>
+                    <span className="row-meta">
+                      {fmtDate(ev.createdAt)}
+                      {ev.actorEmail ? ` · ${ev.actorEmail}` : ""}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -394,10 +459,4 @@ export function InvoiceTab() {
       )}
     </div>
   );
-}
-
-function eventLabel(type: "CREATED" | "PAYMENT_CONFIRMED" | "EXPIRED"): string {
-  if (type === "CREATED") return "Invoice dibuat (menunggu pembayaran)";
-  if (type === "PAYMENT_CONFIRMED") return "Ditandai dibayar oleh merchant";
-  return "Kedaluwarsa";
 }

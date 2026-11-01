@@ -6,6 +6,7 @@ import { copyText } from "@/lib/clipboard";
 import { fmtDate } from "@/lib/format";
 import type { ApiKey, Me } from "@/lib/types";
 import { CopyIcon } from "./icons";
+import { StatusPill } from "./StatusPill";
 import { useToast } from "./Toast";
 
 const CURL_SNIPPET = `curl -X POST https://<domain>/v1/qr/convert \\
@@ -106,7 +107,7 @@ export function SettingsTab({ me, onUpdated }: Props) {
       <section className="card">
         <div className="card-head">
           <h2>Profil merchant</h2>
-          <span className="pill">{me.merchant.role}</span>
+          <StatusPill status={me.merchant.role} tone="brand" />
         </div>
         <form onSubmit={saveProfile}>
           <label className="field">
@@ -119,7 +120,7 @@ export function SettingsTab({ me, onUpdated }: Props) {
           </label>
           <label className="field">
             <span className="label">
-              Telepon <span className="opt">opsional</span>
+              Telepon <span className="opt">Opsional</span>
             </span>
             <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={40} inputMode="tel" autoComplete="tel" />
           </label>
@@ -177,8 +178,8 @@ export function SettingsTab({ me, onUpdated }: Props) {
               <li key={k.id} className="row">
                 <div className="row-main">
                   <div className="row-title">
-                    {k.name}
-                    <span className={`pill${k.revoked ? " muted" : ""}`}>{k.revoked ? "REVOKED" : "ACTIVE"}</span>
+                    <span>{k.name}</span>
+                    <StatusPill status={k.revoked ? "REVOKED" : "ACTIVE"} />
                   </div>
                   <div className="row-meta mono">
                     {k.prefix}… · dibuat {fmtDate(k.createdAt)} · {k.lastUsedAt ? `dipakai ${fmtDate(k.lastUsedAt)}` : "belum dipakai"}
