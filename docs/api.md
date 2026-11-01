@@ -139,6 +139,55 @@ curl -X POST http://localhost:3000/v1/qr/convert -H "x-api-key: kp_live_…" \
 
 Keys are stored as SHA-256 hashes with a `kp_live_…` prefix shown in the UI.
 
+## Invoices (MVP V2)
+
+Invoices are merchant-scoped, amount-specific QR requests with an explicit lifecycle.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/v1/invoices` | session or API key | create a PENDING invoice + generate its QR |
+| GET | `/v1/invoices` | session or API key | list; `limit` (1–50, default 20), `before` (ISO cursor), `status`, `qrisId` |
+| GET | `/v1/invoices/:id` | session or API key | detail by public id (`INV-…`) or uuid, incl. audit events |
+| GET | `/v1/invoices/:id/qr` | session or API key | PNG of the invoice QR |
+| POST | `/v1/invoices/:id/confirm-payment` | **session only** | manual merchant confirmation PENDING → PAID |
+
+Create body:
+
+```json
+{ "amount": 25000, "description": "Kopi susu", "qrisId": "uuid", "expiresInMinutes": 60 }
+```
+
+- `amount` — integer rupiah, `MIN_AMOUNT`..`MAX_AMOUNT`, never floating point.
+- `description` — optional, trimmed, max 200 chars.
+- `qrisId` — must be an **ACTIVE** QRIS owned by the calling merchant, else `404`.
+- `expiresInMinutes` — 5…10080, default 60 (`INVOICE_*_TTL_MINUTES` env). Expiry is stored in UTC
+  and returned as ISO 8601; the backend enforces it (lazy sweep, no scheduler).
+
+Statuses: `PENDING` → `PAID` (manual merchant confirmation) or `EXPIRED` (past `expiresAt`).
+`PAID` and `EXPIRED` are terminal. There is no `CANCELLED` in this milestone.
+
+Semantics that the API guarantees:
+
+- Creating an invoice or generating/downloading its QR **never** marks it paid.
+- `confirm-payment` requires a session cookie: an API key has no user identity to audit, so it gets
+  `401`. The acting user id and server timestamp are recorded, `confirmationMethod = MANUAL_MERCHANT`.
+- Confirmation is atomic and idempotent: a second call returns `409 INVOICE_ALREADY_PAID` and writes
+  no additional audit event. Expired invoices return `410 INVOICE_EXPIRED` — expiry never overwrites
+  `PAID`.
+- Cross-tenant ids return `404`, same as ids that do not exist.
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `INVALID_AMOUNT` | 400 | not a positive integer within configured bounds |
+| `INVALID_EXPIRY` | 400 | outside 5…10080 minutes or not an integer |
+| `INVALID_DESCRIPTION` | 400 | longer than 200 characters |
+| `QRIS_ARCHIVED` | 400 | selected QRIS is archived |
+| `INVOICE_ALREADY_PAID` | 409 | duplicate manual confirmation |
+| `INVOICE_EXPIRED` | 410 | invoice already expired |
+
+Audit: every invoice has append-only `invoice_events` rows (`CREATED`, `PAYMENT_CONFIRMED`,
+`EXPIRED`) with actor and timestamp, returned in the detail payload.
+
 ## Tenant isolation
 
 Every merchant-owned query filters by the merchant derived from the credential. Cross-tenant

@@ -1,0 +1,16 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+      args:
+        API_URL: ${WEB_API_URL:-http://api:3000}
+    restart: unless-stopped
+    environment:
+      API_URL: ${WEB_API_URL:-http://api:3000}
+      PORT: "3100"
+    ports:
+      - "${WEB_HOST_PORT:-3100}:3100"
+    depends_on:
+      api:
+        condition: service_healthy

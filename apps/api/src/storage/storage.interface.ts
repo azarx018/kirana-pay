@@ -4,4 +4,6 @@ export const FILE_STORAGE = Symbol('FILE_STORAGE');
 export interface FileStorage {
   save(key: string, data: Buffer, contentType: string): Promise<string>;
   read(path: string): Promise<Buffer>;
+  /** Best-effort cleanup for artifacts that never became a persisted record. */
+  delete(path: string): Promise<void>;
 }

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { FileStorage } from './storage.interface';
 
@@ -16,5 +16,13 @@ export class LocalFileStorage implements FileStorage {
 
   async read(path: string): Promise<Buffer> {
     return readFile(path);
+  }
+
+  async delete(path: string): Promise<void> {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 }

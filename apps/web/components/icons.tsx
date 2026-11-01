@@ -75,3 +75,10 @@ export const DownloadIcon = ({ size = 20 }: IconProps) => (
     <path d="M12 4v12M7 11l5 5 5-5M4.5 15v2.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5V15" />
   </svg>
 );
+
+export const InvoiceIcon = ({ size = 20 }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M6 3.5h12v17l-3-2-3 2-3-2-3 2z" />
+    <path d="M9 8h6M9 12h6M9 16h3" />
+  </svg>
+);

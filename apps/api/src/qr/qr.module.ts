@@ -12,5 +12,6 @@ import { QrService } from './qr.service';
   imports: [TypeOrmModule.forFeature([QrJob, MerchantQris]), StorageModule, AuthModule],
   controllers: [QrController],
   providers: [QrService, QrEngineClient],
+  exports: [QrEngineClient],
 })
 export class QrModule {}

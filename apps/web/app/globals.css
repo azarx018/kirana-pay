@@ -422,6 +422,15 @@ button { font: inherit; color: inherit; }
   font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
 }
 .pill.muted { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
+.pill-pending { background: var(--warn-soft); color: #7a5a12; border: 1px solid var(--warn-line); }
+:root[data-theme="dark"] .pill-pending { color: #e3c777; }
+.pill-paid { background: var(--accent-soft); color: var(--accent); }
+.note-box {
+  margin-top: 16px; padding: 14px 16px; border-radius: var(--radius-sm);
+  background: var(--warn-soft); border: 1px solid var(--warn-line);
+  font-size: 14px; color: var(--ink-2);
+}
+.note-box p { margin: 0 0 12px; }
 .empty { padding: 28px 8px; text-align: center; color: var(--muted); font-size: 14px; }
 
 .skel {

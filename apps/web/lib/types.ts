@@ -42,3 +42,36 @@ export interface ApiKey {
   createdAt: string;
   lastUsedAt: string | null;
 }
+
+export type InvoiceStatus = "PENDING" | "PAID" | "EXPIRED";
+
+export interface Invoice {
+  id: string;
+  publicId: string;
+  amount: number;
+  currency: string;
+  description: string | null;
+  status: InvoiceStatus;
+  qris: { id: string; displayName: string; provider: Provider };
+  createdAt: string;
+  expiresAt: string;
+  paidAt: string | null;
+  confirmationMethod: string | null;
+  confirmedBy: { email: string } | null;
+  qrUrl: string | null;
+}
+
+export interface InvoiceEvent {
+  type: "CREATED" | "PAYMENT_CONFIRMED" | "EXPIRED";
+  actorEmail: string | null;
+  createdAt: string;
+}
+
+export interface InvoiceDetail extends Invoice {
+  events: InvoiceEvent[];
+}
+
+export interface InvoiceList {
+  items: Invoice[];
+  nextCursor: string | null;
+}

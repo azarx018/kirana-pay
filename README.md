@@ -8,8 +8,18 @@ generated from a merchant's own QRIS and money flows through that merchant's acq
 | Component | Tech | Port |
 |---|---|---|
 | `apps/api` | NestJS 11 + TypeORM + PostgreSQL + static dashboard | 3000 |
+| `apps/web` | Next.js 15 dashboard (light/dark, invoice + QR flows) | 3100 |
 | `services/qr-engine` | Rust + Axum (decode, validate, transform, render) | 8081 internal |
 | PostgreSQL | 16 | 5432 internal |
+
+## Invoices (MVP V2)
+
+`POST /v1/invoices` creates a merchant-scoped invoice with a fixed amount and its own QR, generated
+by the same Rust engine. An invoice is `PENDING` until a signed-in merchant user explicitly confirms
+receipt (`POST /v1/invoices/:id/confirm-payment`), which records the acting user, a server timestamp
+and a `PAYMENT_CONFIRMED` audit event. Generating, viewing or downloading a QR never marks anything
+paid, and expiry (`PENDING` → `EXPIRED`, lazily enforced, default 60 minutes) never overwrites
+`PAID`. Full contract and error codes: `docs/api.md`.
 
 ## Model
 

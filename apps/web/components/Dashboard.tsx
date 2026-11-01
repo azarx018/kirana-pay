@@ -5,13 +5,14 @@ import { api } from "@/lib/api";
 import type { Me } from "@/lib/types";
 import { AuthView } from "./AuthView";
 import { GeneratorTab } from "./GeneratorTab";
+import { InvoiceTab } from "./InvoiceTab";
 import { QrisTab } from "./QrisTab";
 import { SettingsTab } from "./SettingsTab";
-import { CardIcon, LogoutIcon, QrIcon, SlidersIcon } from "./icons";
+import { CardIcon, InvoiceIcon, LogoutIcon, QrIcon, SlidersIcon } from "./icons";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 
-type Tab = "generator" | "qris" | "settings";
+type Tab = "generator" | "invoice" | "qris" | "settings";
 
 interface TabDef {
   id: Tab;
@@ -23,11 +24,13 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: "generator", label: "Generator", title: "Generator QR", desc: "Ubah QRIS statis jadi QR dengan nominal tetap.", Icon: QrIcon },
+  { id: "invoice", label: "Invoice", title: "Invoice", desc: "Tagihan bernominal tetap; status dibayar hanya lewat konfirmasi manual merchant.", Icon: InvoiceIcon },
   { id: "qris", label: "QRIS", title: "QRIS Saya", desc: "Simpan beberapa QRIS statis, masing-masing dengan provider dan nama sendiri.", Icon: CardIcon },
   { id: "settings", label: "Pengaturan", title: "Pengaturan", desc: "Profil merchant dan kredensial API.", Icon: SlidersIcon },
 ];
 
-const isTab = (v: string): v is Tab => v === "generator" || v === "qris" || v === "settings";
+const isTab = (v: string): v is Tab =>
+  v === "generator" || v === "invoice" || v === "qris" || v === "settings";
 
 export function Dashboard() {
   const [me, setMe] = useState<Me | null>(null);
@@ -131,6 +134,7 @@ export function Dashboard() {
             </div>
 
             {tab === "generator" && <GeneratorTab onGoQris={() => go("qris")} />}
+            {tab === "invoice" && <InvoiceTab />}
             {tab === "qris" && <QrisTab />}
             {tab === "settings" && (
               <SettingsTab
