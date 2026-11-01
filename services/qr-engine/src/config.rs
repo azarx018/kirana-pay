@@ -6,6 +6,8 @@ pub struct Config {
     pub max_image_bytes: usize,
     pub max_amount: i64,
     pub min_amount: i64,
+    /// Max images decoded at the same time (decoding is CPU/memory heavy).
+    pub max_concurrent_decodes: usize,
 }
 
 impl Config {
@@ -27,6 +29,11 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1),
+            max_concurrent_decodes: env::var("QR_ENGINE_MAX_CONCURRENT_DECODES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v: &usize| *v > 0)
+                .unwrap_or(4),
         }
     }
 }

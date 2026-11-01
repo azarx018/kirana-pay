@@ -1,6 +1,10 @@
 use base64::Engine;
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, GrayImage, ImageBuffer, Luma};
+use image::{DynamicImage, GrayImage, ImageBuffer, Luma};
+
+const MAX_DIMENSION: u32 = 8000;
+/// Hard cap for memory used while decoding a single image.
+const MAX_DECODE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Decode a base64 image and read the first QR payload found.
 ///
@@ -21,14 +25,30 @@ pub fn decode_qr_from_base64(b64: &str, max_bytes: usize) -> Result<String, supe
         return Err(super::DecodeError::TooLarge);
     }
 
-    let img = image::load_from_memory(&data).map_err(|_| super::DecodeError::NotAnImage)?;
-    let (w, h) = img.dimensions();
+    // Read the header first: reject oversized images BEFORE allocating pixel buffers,
+    // so a tiny, highly-compressed file cannot force a huge decode.
+    let open = || {
+        image::ImageReader::new(std::io::Cursor::new(&data))
+            .with_guessed_format()
+            .map_err(|_| super::DecodeError::NotAnImage)
+    };
+    let (w, h) = open()?
+        .into_dimensions()
+        .map_err(|_| super::DecodeError::NotAnImage)?;
     if w == 0 || h == 0 {
         return Err(super::DecodeError::NotAnImage);
     }
-    if w > 8000 || h > 8000 {
+    if w > MAX_DIMENSION || h > MAX_DIMENSION {
         return Err(super::DecodeError::TooLarge);
     }
+
+    let mut reader = open()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|_| super::DecodeError::NotAnImage)?;
 
     let luma = img.to_luma8();
 
@@ -166,5 +186,38 @@ mod tests {
         let out = stretch_contrast(&img);
         assert_eq!(out.get_pixel(0, 0).0[0], 0);
         assert_eq!(out.get_pixel(3, 0).0[0], 255);
+    }
+}
+
+#[cfg(test)]
+mod header_limit_tests {
+    use super::*;
+
+    fn png_b64(width: u32, height: u32) -> String {
+        let img = DynamicImage::ImageLuma8(GrayImage::new(width, height));
+        let mut bytes = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .expect("encode png");
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn rejects_oversized_dimensions_from_the_header() {
+        // 8001 px wide but only a few bytes of pixels: must be rejected as too large.
+        let err = decode_qr_from_base64(&png_b64(8001, 1), 5 * 1024 * 1024).unwrap_err();
+        assert!(matches!(err, crate::parser::DecodeError::TooLarge));
+    }
+
+    #[test]
+    fn small_blank_image_is_not_a_qr() {
+        let err = decode_qr_from_base64(&png_b64(64, 64), 5 * 1024 * 1024).unwrap_err();
+        assert!(matches!(err, crate::parser::DecodeError::NoQr));
+    }
+
+    #[test]
+    fn garbage_is_not_an_image() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"definitely not an image");
+        let err = decode_qr_from_base64(&b64, 5 * 1024 * 1024).unwrap_err();
+        assert!(matches!(err, crate::parser::DecodeError::NotAnImage));
     }
 }

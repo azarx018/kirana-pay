@@ -83,7 +83,8 @@ export class QrEngineClient {
         | ({ success?: boolean; error?: { code?: string; message?: string } } & EngineConvertResult)
         | { success: false; error: { code: string; message: string } };
 
-      if (!response.ok || 'success' in body) {
+      // Only an explicit `success: false` envelope is an engine error; a result is never flagged by key presence.
+      if (!response.ok || (body as { success?: boolean }).success === false) {
         const err = (body as { error?: { code?: string; message?: string } }).error;
         throw new QrEngineError(err?.code ?? 'QR_ENGINE_UNAVAILABLE', err?.message ?? 'QR engine error');
       }

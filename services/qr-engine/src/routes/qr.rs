@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use tokio::sync::Semaphore;
 
 use crate::config::Config;
 use crate::errors::QrError;
@@ -17,12 +20,16 @@ use crate::validator;
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
+    decode_slots: Arc<Semaphore>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
+        let config = Config::from_env();
+        let decode_slots = Arc::new(Semaphore::new(config.max_concurrent_decodes));
         Self {
-            config: Config::from_env(),
+            config,
+            decode_slots,
         }
     }
 }
@@ -37,6 +44,24 @@ fn error_response(err: QrError) -> axum::response::Response {
         },
     };
     (status, Json(body)).into_response()
+}
+
+/// Decoding is CPU- and memory-heavy: run it on the blocking pool (so it cannot
+/// stall the async workers) and cap how many run at once.
+async fn decode_image(state: &AppState, image_base64: String) -> Result<String, QrError> {
+    let max_bytes = state.config.max_image_bytes;
+    let _permit = state
+        .decode_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| QrError::Internal)?;
+    tokio::task::spawn_blocking(move || {
+        image_decoder::decode_qr_from_base64(&image_base64, max_bytes)
+    })
+    .await
+    .map_err(|_| QrError::Internal)?
+    .map_err(decode_error_to_qr_error)
 }
 
 fn decode_error_to_qr_error(e: crate::parser::DecodeError) -> QrError {
@@ -54,11 +79,9 @@ pub async fn inspect(
     State(state): State<AppState>,
     Json(req): Json<InspectRequest>,
 ) -> axum::response::Response {
-    let cfg = state.config.clone();
-
-    let payload = match image_decoder::decode_qr_from_base64(&req.image_base64, cfg.max_image_bytes) {
+    let payload = match decode_image(&state, req.image_base64).await {
         Ok(p) => p,
-        Err(e) => return error_response(decode_error_to_qr_error(e)),
+        Err(e) => return error_response(e),
     };
 
     let info = match validator::validate_static(&payload) {
@@ -104,10 +127,9 @@ pub async fn convert(
         return error_response(QrError::InvalidAmount);
     }
 
-    let payload = match image_decoder::decode_qr_from_base64(&req.image_base64, cfg.max_image_bytes)
-    {
+    let payload = match decode_image(&state, req.image_base64).await {
         Ok(p) => p,
-        Err(e) => return error_response(decode_error_to_qr_error(e)),
+        Err(e) => return error_response(e),
     };
 
     let info = match validator::validate_static(&payload) {

@@ -11,9 +11,9 @@
 |---|---|
 | Cakupan | API NestJS, dashboard Next.js + dashboard statis lama, `qr-engine` (Rust), Docker/compose, dependency |
 | Metode | Review kode manual, `pnpm audit --prod`, cek riwayat git untuk secret, cek konfigurasi runtime VPS (hanya baca) |
-| Tidak dicakup | Isi `.env` dan database (sengaja tidak dibaca), build Docker dan kompilasi Rust (tidak ada `cargo`/akses docker di lingkungan audit), pentest dinamis |
-| Verifikasi | `tsc --noEmit` lolos, `jest` 31/31 lolos (sebelumnya 20), `nest build` dan `next build` lolos |
-| Hasil | 15 temuan diperbaiki di branch, 1 perlu tindakan operasional manual, sisanya masuk backlog (bagian 4) |
+| Tidak dicakup | Isi `.env` dan database (sengaja tidak dibaca), build Docker (tidak ada akses docker di lingkungan audit), tes terhadap database sungguhan, pentest dinamis |
+| Verifikasi | `tsc --noEmit` lolos, `jest` 31/31 (sebelumnya 20), `cargo test` 23/23 (sebelumnya 20), `nest build`, `next build`, dan `cargo build` tanpa warning |
+| Hasil | 19 temuan diperbaiki dan sudah di-merge, 1 perlu tindakan operasional manual, sisanya masuk backlog (bagian 4) |
 
 Asumsi lama di `audit-v1.md` yang **sudah tidak berlaku**: app dianggap hanya
 dilayani lewat HTTP di dalam tailnet. Kenyataannya Tailscale Funnel meneruskan
@@ -39,6 +39,10 @@ internet publik. Risiko "cookie tanpa Secure" yang dulu diterima menjadi nyata.
 | F-14 | Rendah | Sesi kedaluwarsa hanya dihapus jika dipresentasikan lagi. Update `lastUsedAt` fire-and-forget tanpa `.catch`. | Pembersihan saat login, dan promise ditangani. |
 | F-15 | Rendah | Tidak ada header keamanan, `X-Powered-By` aktif. | Middleware API dan `headers()` di Next: nosniff, frame DENY, referrer, permissions, HSTS (hanya saat HTTPS). **CSP belum**, lihat B-05. |
 | F-16 | Info | Peringatan `API_KEY is not set` sudah usang (auth sekarang multi-tenant). | Dihapus agar tidak menyesatkan. |
+| F-17 | Sedang | `qr-engine`: gambar didecode penuh sebelum dimensi dicek, sehingga file kecil yang sangat terkompresi memaksa alokasi besar (batas bawaan crate `image` ±512 MiB per decode, dan register terbuka). | Dimensi dibaca dari header lebih dulu (`into_dimensions`), lalu decode dengan `Limits` (lebar/tinggi 8000, alokasi maks 256 MiB). Ada tes baru. |
+| F-18 | Sedang | `qr-engine`: decode CPU-bound berjalan langsung di handler async dan tanpa batas paralel. | `spawn_blocking` plus semaphore (`QR_ENGINE_MAX_CONCURRENT_DECODES`, default 4). |
+| F-19 | Rendah | `qr-engine`: body JSON dibatasi 2 MB bawaan axum, padahal upload 5 MB (base64 ±6,7 MB). Gambar >1,5 MB gagal dengan error menyesatkan. | `DefaultBodyLimit` dihitung dari `QR_ENGINE_MAX_IMAGE_BYTES` (×4/3 + 64 KiB). |
+| F-20 | Rendah | `QrEngineClient.convert` menganggap error bila key `success` ada di body, rapuh bila engine mulai mengirim `success: true`. | Hanya `success === false` yang dianggap error. |
 
 ## 3. Tindakan manual (tidak bisa dikerjakan lewat kode)
 
@@ -64,17 +68,13 @@ internet publik. Risiko "cookie tanpa Secure" yang dulu diterima menjadi nyata.
 
 | ID | Tingkat | Item | Catatan |
 |---|---|---|---|
-| B-01 | Sedang | `qr-engine`: gambar didecode penuh (`load_from_memory`) **sebelum** dimensi dicek (batas 8000 px). Batas alokasi bawaan crate `image` sekitar 512 MiB per decode, jadi beberapa request paralel bisa menekan memori, dan register terbuka. | Pakai `ImageReader::into_dimensions()` lebih dulu, lalu decode. Tidak diterapkan karena tidak bisa dikompilasi di lingkungan audit. |
-| B-02 | Sedang | `qr-engine`: decode CPU-bound berjalan langsung di handler async (memblokir worker tokio). | Bungkus dengan `tokio::task::spawn_blocking`. |
-| B-03 | Rendah | `qr-engine`: body JSON dibatasi 2 MB bawaan axum, padahal `MAX_UPLOAD_BYTES` 5 MB (base64 jadi ±6,7 MB). Gambar >1,5 MB gagal dengan error yang menyesatkan. | Tambah `DefaultBodyLimit` sesuai konfigurasi. |
-| B-04 | Sedang | Container `api`/`web` berjalan sebagai root, image menyalin seluruh builder (devDependencies, source). | `USER node`, multi-stage dengan `pnpm deploy --prod`, `chown` volume `/app/var/qr`. Perlu diuji dengan `docker build`. |
+| B-04 | Sedang | Container `api`/`web` berjalan sebagai root, image menyalin seluruh builder (devDependencies, source). | `USER node`, multi-stage dengan `pnpm deploy --prod`, `chown` volume `/app/var/qr` (volume lama dimiliki root, jadi perlu migrasi izin). Tidak diterapkan: tidak ada akses docker untuk mengujinya. |
 | B-05 | Sedang | Belum ada CSP. Dashboard lama memakai `innerHTML` (data user sudah di-escape, `id/status` dari server), dan layout Next memakai inline script untuk tema. | CSP berbasis nonce untuk Next, dan pensiunkan `apps/api/public` bila sudah digantikan Next. |
 | B-06 | Sedang | `POST /v1/auth/register` terbuka untuk publik dan membocorkan email terdaftar (`EMAIL_TAKEN`). | Keputusan produk: undangan/allowlist, verifikasi email, atau CAPTCHA. |
 | B-07 | Rendah | Tidak ada ganti/reset password dan tidak ada "logout semua sesi". | Perlu sebelum rilis. |
-| B-08 | Rendah | Kursor pagination invoice hanya memakai `createdAt` (item dengan timestamp sama bisa terlewat). `sweepExpired` melakukan UPDATE pada setiap GET. | Kursor komposit `(createdAt, id)`; pindahkan sweep ke job terjadwal. |
+| B-08 | Rendah | Kursor pagination invoice hanya memakai `createdAt`, dan JS memotong presisi mikrodetik Postgres menjadi milidetik, sehingga item bisa terlewat di batas halaman. `sweepExpired` melakukan UPDATE pada setiap GET. | Kursor berupa `id` baris terakhir dengan perbandingan `(createdAt, id) < (SELECT … WHERE id = :cursor)`; pindahkan sweep ke job terjadwal. Tidak diterapkan karena SQL-nya belum bisa diuji ke Postgres sekali pakai. Web saat ini belum memakai kursor. |
 | B-09 | Rendah | 2 advisory moderate tersisa: `glob`/`minimatch` via `typeorm` (jalur CLI). | Naikkan TypeORM saat ada rilis yang menaikkan `glob`. Tidak di jalur request. |
 | B-10 | Sedang | Tidak ada tes untuk `AuthService`, guard, dan `InvoicesService` (khususnya race `confirmPayment` dan isolasi antar-merchant). | Tes integrasi dengan Postgres sekali pakai (testcontainers). |
-| B-11 | Rendah | `QrEngineClient.convert` mendeteksi error dengan `'success' in body`, rapuh bila engine mulai mengembalikan `success: true`. | Kontrak respons eksplisit. |
 | B-12 | Rendah | Audit QRIS baru berupa log, bukan tabel. Belum ada notifikasi/re-auth saat QRIS diganti. | Tabel `audit_events` + konfirmasi password untuk operasi sensitif. |
 | B-13 | Info | Penyimpanan gambar memakai path relatif `./var/qr` jika `STORAGE_LOCAL_DIR` tidak di-set. | Wajibkan path absolut di production. |
 
@@ -111,6 +111,7 @@ lalu lakukan langkah manual bagian 3 **sebelum** `docker compose up -d --build`
 - API: `main.ts`, `env.ts` (baru), `common/{runtime-config,roles,security-headers.middleware}.ts` (baru) beserta spec, `auth/*`, `merchant/*`, `api-keys/*`, `qris/*`, `app.module.ts`, `common/all-exceptions.filter.ts`
 - Web: `apps/web/next.config.ts`
 - Infra: `docker-compose.yml`, `docker-compose.override.yml`, `.env.example`, `.gitignore`
+- Engine Rust: `Cargo.toml` (fitur `sync`), `config.rs`, `parser/image_decoder.rs`, `routes/{mod,qr}.rs`
 - Dependency: `package.json` (`pnpm.overrides`), `pnpm-lock.yaml`
 
 ### Perubahan perilaku yang perlu diketahui agent lain
