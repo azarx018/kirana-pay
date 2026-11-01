@@ -28,7 +28,7 @@ internet publik. Risiko "cookie tanpa Secure" yang dulu diterima menjadi nyata.
 | F-03 | Sedang | `COOKIE_SECURE` default `false` (kode dan compose). | Default `true` di production (`isCookieSecure()`), compose default `true`. Set `false` hanya untuk HTTP murni. |
 | F-04 | Sedang | Port 3100 (web) dan 3200 (API) di-publish ke `0.0.0.0`. Terlihat di `ss -tlnp` host. | Compose mengikat ke `127.0.0.1`. Funnel dan reverse proxy lokal tetap bisa menjangkau. |
 | F-05 | Sedang | Swagger `/docs` dan `/docs-json` publik (juga lewat rewrite Next). | Nonaktif di production kecuali `ENABLE_SWAGGER=true`. |
-| F-06 | Sedang | Password DB hardcoded di `docker-compose.yml` dan fallback `'kirana'` di `app.module.ts`. | Compose memakai `${DB_PASSWORD:?…}`. Di production, boot **gagal** jika `DB_PASSWORD` kosong atau `kirana` (escape hatch sementara: `ALLOW_INSECURE_DEFAULTS=true`). |
+| F-06 | Sedang | Compose memakai `${DB_PASSWORD:-kirana}` dan kode API punya fallback `'kirana'`: bila `.env` hilang atau variabel salah ketik, DB dan API diam-diam jalan dengan password default yang publik. | Compose memakai `${DB_PASSWORD:?…}` (gagal keras bila kosong). Di production, boot API **gagal** jika `DB_PASSWORD` kosong atau `kirana` (escape hatch sementara: `ALLOW_INSECURE_DEFAULTS=true`). `.env` di VPS ini sudah berisi password kuat, jadi tidak ada rotasi yang diperlukan. |
 | F-07 | Sedang | `*.key`/`*.crt` (sertifikat Tailscale) ada di root repo dan tidak di-ignore. Satu `git add .` bisa meng-commit private key. Riwayat git sudah dicek: belum pernah ter-commit. | `.gitignore` memblokir `*.key *.crt *.pem *.p12 .env.*`. Disarankan memindahkan file itu keluar dari repo. |
 | F-08 | Tinggi | `multer 2.4.0` (DoS, advisory high) di semua endpoint upload; `postcss` (2 high, 2 moderate) via Next; `js-yaml` via swagger. | `pnpm.overrides` di root: `multer>=2.5.0`, `postcss>=8.5.23`, `js-yaml>=5.4.1`. Sisa 2 moderate, lihat B-09. |
 | F-09 | Sedang | Role tidak ditegakkan. `PATCH /v1/merchant` berkomentar "owner only" tapi tidak mengecek. User `STAFF` bisa membuat/revoke API key, mengganti/mengarsipkan QRIS. | `assertOwner()` di merchant, api-keys, dan QRIS (create/replace/archive). Laten: saat ini belum ada alur membuat STAFF. |
@@ -53,12 +53,7 @@ internet publik. Risiko "cookie tanpa Secure" yang dulu diterima menjadi nyata.
    ```
    Setelah itu uji dari jaringan di luar tailnet: `https://<host>.ts.net/` tidak boleh lagi menampilkan app.
    Untuk akses saat development gunakan `tailscale serve` (hanya tailnet), bukan `funnel`.
-2. **Rotasi password DB** sebelum deploy branch ini. Mengubah `POSTGRES_PASSWORD` tidak mengubah password pada volume yang sudah ada:
-   ```bash
-   docker compose exec postgres psql -U kirana -d kirana_pay \
-     -c "ALTER USER kirana WITH PASSWORD '<password-baru>';"
-   # lalu isi DB_PASSWORD=<password-baru> di .env dan: docker compose up -d
-   ```
+2. **`COOKIE_SECURE=false` di `.env` harus diubah menjadi `true`** (atau barisnya dihapus). Nilai eksplisit `false` mengalahkan default baru, jadi tanpa ini cookie sesi tetap tanpa `Secure` walau app sudah di-HTTPS-kan Funnel. Ubah hanya bila akses lewat HTTPS; kalau masih ada yang membuka lewat `http://`, login lewat jalur itu akan berhenti bekerja.
 3. **Isi `TRUST_PROXY`** di `.env`. Rantai saat ini Funnel → web (Next rewrite) → API, jadi mulai dari `2`. Verifikasi dengan mencoba login gagal dari dua jaringan berbeda: bucket rate limit harus terpisah. Jika IP klien tidak muncul benar, sesuaikan angkanya.
 4. **Pindahkan `*.key`/`*.crt`** dari root repo ke luar repo (mis. `/etc/ssl/kirana/`), dan hapus dari working tree. Kalau sempat tersalin ke tempat lain, terbitkan ulang dengan `tailscale cert`.
 5. **Firewall Tencent**: pastikan inbound hanya yang diperlukan. Port 3100/3200/18888/2222/3001 jangan terbuka publik.
@@ -104,8 +99,8 @@ git apply --check /home/mcp/workspace/kirana-pay-audit.patch && git apply /home/
 ```
 
 Setelah merge: `pnpm install`, `pnpm --filter @kirana-pay/api lint && pnpm --filter @kirana-pay/api test`,
-lalu lakukan langkah manual bagian 3 **sebelum** `docker compose up -d --build`
-(tanpa `DB_PASSWORD` yang kuat, API akan menolak start di production).
+lalu lakukan langkah manual bagian 3 sebelum `docker compose up -d --build`.
+Catatan: build ulang image `qr-engine` diperlukan karena kode Rust berubah.
 
 ### File yang berubah
 - API: `main.ts`, `env.ts` (baru), `common/{runtime-config,roles,security-headers.middleware}.ts` (baru) beserta spec, `auth/*`, `merchant/*`, `api-keys/*`, `qris/*`, `app.module.ts`, `common/all-exceptions.filter.ts`
