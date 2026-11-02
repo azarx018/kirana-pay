@@ -353,13 +353,6 @@ for tok in "$PL_TOKEN" "$T1" "$T2" "$T4"; do
   if grep -qF -e "$tok" /tmp/kirana-api.log; then fail "a payment link token appears in the API log"; fi
 done
 
-RL=0
-for _ in $(seq 1 75); do
-  C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/public/payment-links/$T2")
-  if [ "$C" = "429" ]; then RL=$((RL + 1)); fi
-done
-[ "$RL" -ge 1 ] || fail "public endpoint is not rate limited"
-echo "    public endpoint rate limited ($RL x 429); tokens absent from logs"
 
 echo "==> api keys: scopes, bearer, expiry, revoke, rotate (V4)"
 kcall() { curl -s -o /tmp/k.json -w '%{http_code}' "$@"; }
@@ -494,6 +487,198 @@ for k in "$K_LEG" "$K_RO" "$K_WO" "$K_EXP" "$K_REV" "$K_OLD" "$K_NEW"; do
 done
 echo "    no key appears in the API log"
 
+echo "==> developer API: invoices, idempotency, pagination, payment links (V4)"
+DEVJ='content-type: application/json'
+# dcall KEY METHOD PATH [curl args...] -> /tmp/d.json, /tmp/d.hdr ; prints status
+dcall() { local k="$1" m="$2" p="$3"; shift 3; curl -s -D /tmp/d.hdr -o /tmp/d.json -w '%{http_code}' -X "$m" -H "Authorization: Bearer $k" "$BASE$p" "$@"; }
+inv_count() { db "SELECT count(*) FROM invoices WHERE \"merchantId\" = (SELECT \"merchantId\" FROM api_keys WHERE id = '$1')"; }
+
+mkkey '{"name":"dev-full","scopes":["invoices:read","invoices:write","payment_links:read","payment_links:write"]}'; K_DEV="$KEY_PLAIN"; K_DEV_ID="$KEY_ID"
+mkkey '{"name":"dev-ro","scopes":["invoices:read","payment_links:read"]}'; K_DRO="$KEY_PLAIN"
+mkkey '{"name":"dev-list","scopes":["invoices:read","invoices:write"]}'; K_LIST="$KEY_PLAIN"; K_LIST_ID="$KEY_ID"
+KEY_B=$(curl -sf -b "$JAR_B" -X POST "$BASE/v1/api-keys" -H "$DEVJ" -d '{"name":"b","scopes":["invoices:read","invoices:write"]}' | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"]["key"])')
+
+# --- authentication: server-to-server only
+[ "$(kcall "$BASE/v1/developer/invoices")" = "401" ] || fail "developer API open without a key"
+[ "$(kcall -b "$JAR_A" "$BASE/v1/developer/invoices")" = "401" ] || fail "developer API accepted a dashboard session"
+[ "$(dcall "kp_live_$(printf 'f%.0s' $(seq 1 48))" GET /v1/developer/invoices)" = "401" ] || fail "unknown key accepted"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H "x-api-key: $K_DRO" "$BASE/v1/developer/invoices")" = "200" ] || fail "legacy x-api-key header rejected"
+echo "    key required; sessions and unknown keys rejected"
+
+# --- request hygiene
+INV0=$(inv_count "$K_DEV_ID")
+[ "$(dcall "$K_DEV" POST /v1/developer/invoices -H 'content-type: text/plain' --data "{\"amount\":1000,\"qrisId\":\"$QRIS_ID\"}")" = "415" ] || fail "text/plain accepted"
+grep -q UNSUPPORTED_MEDIA_TYPE /tmp/d.json || fail "415 wrong code"
+[ "$(dcall "$K_DEV" POST /v1/developer/invoices)" = "415" ] || fail "empty request accepted"
+for extra in '"status":"PAID"' '"paidAt":"2026-01-01T00:00:00Z"' '"merchantId":"00000000-0000-4000-8000-000000000000"' '"confirmedBy":"x"'; do
+  CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -d "{\"amount\":1000,\"qrisId\":\"$QRIS_ID\",$extra}")
+  [ "$CODE" = "400" ] || fail "client-controlled field accepted: $extra ($CODE)"
+done
+[ "$(inv_count "$K_DEV_ID")" = "$INV0" ] || fail "a rejected request still created an invoice"
+python3.12 -c 'print("{\"amount\":1000,\"description\":\"" + "a"*40000 + "\"}")' > /tmp/big.json
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" --data @/tmp/big.json)
+[ "$CODE" = "413" ] || fail "oversized body not rejected ($CODE)"
+echo "    wrong content-type 415, status/paidAt/merchantId rejected (400), >32kb body 413"
+
+# --- create + public contract
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -d "{\"amount\":25000,\"description\":\"dev kopi\",\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "201" ] || fail "developer create ($CODE)"
+chk /tmp/d.json 'd["success"] and set(d["data"])=={"reference","amount","currency","description","status","createdAt","expiresAt","paidAt"} and d["data"]["status"]=="PENDING" and d["data"]["amount"]==25000 and d["data"]["reference"].startswith("INV-") and d["data"]["paidAt"] is None'
+REF1=$(pj /tmp/d.json 'd["data"]["reference"]')
+if grep -Eq 'qrisId|merchantId|qrPath|confirmedBy|"id"' /tmp/d.json; then fail "developer response leaks internal fields"; fi
+[ "$(inv_count "$K_DEV_ID")" = "$((INV0 + 1))" ] || fail "invoice count after create"
+[ "$(dcall "$K_DEV" GET "/v1/developer/invoices/$REF1")" = "200" ] || fail "developer detail"
+chk /tmp/d.json "d['data']['reference']=='$REF1' and d['data']['amount']==25000"
+echo "    create returns the stable public contract (no internal ids)"
+
+# --- scope enforcement
+[ "$(dcall "$K_DRO" POST /v1/developer/invoices -H "$DEVJ" -d "{\"amount\":1000,\"qrisId\":\"$QRIS_ID\"}")" = "403" ] || fail "read-only key created an invoice"
+grep -q INSUFFICIENT_SCOPE /tmp/d.json || fail "wrong scope error code"
+[ "$(dcall "$K_DRO" POST "/v1/developer/invoices/$REF1/payment-link")" = "403" ] || fail "read-only key created a payment link"
+[ "$(inv_count "$K_DEV_ID")" = "$((INV0 + 1))" ] || fail "403 created an invoice"
+echo "    insufficient scope -> 403"
+
+# --- idempotency
+IK="order-$(date +%s)-aaaa"
+BODY1="{\"amount\":31000,\"description\":\"idem one\",\"qrisId\":\"$QRIS_ID\"}"
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: $IK" -d "$BODY1")
+[ "$CODE" = "201" ] || fail "idempotent first create ($CODE)"
+REF_I=$(pj /tmp/d.json 'd["data"]["reference"]')
+N1=$(inv_count "$K_DEV_ID")
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: $IK" -d "$BODY1")
+[ "$CODE" = "200" ] || fail "idempotent replay should be 200 ($CODE)"
+grep -qi '^idempotent-replayed: true' /tmp/d.hdr || fail "replay header missing"
+chk /tmp/d.json "d['data']['reference']=='$REF_I'"
+[ "$(inv_count "$K_DEV_ID")" = "$N1" ] || fail "replay created a second invoice"
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: $IK" -d "{\"amount\":31001,\"description\":\"idem one\",\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "409" ] && grep -q IDEMPOTENCY_CONFLICT /tmp/d.json || fail "different body with same key ($CODE)"
+[ "$(inv_count "$K_DEV_ID")" = "$N1" ] || fail "conflicting request created an invoice"
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: short" -d "$BODY1")
+[ "$CODE" = "400" ] && grep -q INVALID_IDEMPOTENCY_KEY /tmp/d.json || fail "bad key format ($CODE)"
+# a failed attempt frees the key
+FK="fail-$(date +%s)-bbbb"
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: $FK" -d "{\"amount\":0,\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "400" ] || fail "invalid amount accepted ($CODE)"
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: $FK" -d "{\"amount\":12000,\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "201" ] || fail "key was not released after a failed attempt ($CODE)"
+# concurrent duplicates
+PK="par-$(date +%s)-cccc"; PDESC="idem-par-$(date +%s)"
+DPIDS=()
+for i in 1 2 3 4 5 6 7 8; do
+  curl -s -o "/tmp/d_par_$i.json" -w '%{http_code}\n' -X POST "$BASE/v1/developer/invoices" -H "Authorization: Bearer $K_DEV" -H "$DEVJ" -H "Idempotency-Key: $PK" \
+    -d "{\"amount\":15000,\"description\":\"$PDESC\",\"qrisId\":\"$QRIS_ID\"}" &
+  DPIDS+=($!)
+done >/tmp/d_par_codes.txt
+wait "${DPIDS[@]}"
+python3.12 - <<'PY'
+codes = open("/tmp/d_par_codes.txt").read().split()
+assert len(codes) == 8 and set(codes) <= {"200", "201", "409"}, codes
+assert codes.count("201") == 1, codes
+PY
+[ "$(db "SELECT count(*) FROM invoices WHERE description = '$PDESC'")" = "1" ] || fail "concurrent duplicates created more than one invoice"
+CODE=$(dcall "$K_DEV" POST /v1/developer/invoices -H "$DEVJ" -H "Idempotency-Key: $PK" -d "{\"amount\":15000,\"description\":\"$PDESC\",\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "200" ] || fail "retry after concurrent burst should replay ($CODE)"
+[ "$(db "SELECT count(*) FROM idempotency_records WHERE \"keyHash\" IN ('$IK','$PK','$FK')")" = "0" ] || fail "raw idempotency key stored"
+[ "$(db "SELECT count(*) FROM idempotency_records WHERE state='COMPLETED' AND \"invoiceId\" IS NULL")" = "0" ] || fail "completed record without invoice"
+echo "    idempotency: replay, conflict, bad format, key freed after failure, 8 concurrent -> exactly one invoice"
+
+# --- tenant isolation on the developer API
+REFB_TRY=$(dcall "$KEY_B" GET "/v1/developer/invoices/$REF1")
+[ "$REFB_TRY" = "404" ] || fail "merchant B read A's invoice ($REFB_TRY)"
+cp /tmp/d.json /tmp/d_404_foreign.json
+UUID1=$(db "SELECT id FROM invoices WHERE \"publicId\" = '$REF1'")
+[ "$(dcall "$K_DEV" GET "/v1/developer/invoices/$UUID1")" = "404" ] || fail "internal uuid accepted as reference"
+[ "$(dcall "$K_DEV" GET "/v1/developer/invoices/INV-AAAAAAAAAAAA")" = "404" ] || fail "unknown reference"
+[ "$(cat /tmp/d_404_foreign.json)" = "$(cat /tmp/d.json)" ] || fail "foreign and unknown references answer differently"
+[ "$(dcall "$KEY_B" POST "/v1/developer/invoices/$REF1/payment-link")" = "403" ] && true
+CODE=$(dcall "$KEY_B" GET /v1/developer/invoices)
+chk /tmp/d.json 'd["data"]["items"]==[] and d["data"]["nextCursor"] is None'
+echo "    other merchant: uniform 404, empty list"
+
+# --- keyset pagination (with identical createdAt)
+for i in 1 2 3 4 5; do
+  dcall "$K_LIST" POST /v1/developer/invoices -H "$DEVJ" -d "{\"amount\":$((2000+i)),\"description\":\"page$i\",\"qrisId\":\"$QRIS_ID\"}" >/dev/null
+done
+db "UPDATE invoices SET \"createdAt\" = timestamptz '2026-01-01 00:00:00.123456+00' WHERE description LIKE 'page%'" >/dev/null
+TOTAL=$(inv_count "$K_LIST_ID")
+python3.12 - "$BASE" "$K_LIST" "$TOTAL" <<'PY'
+import json, sys, urllib.request
+base, key, total = sys.argv[1], sys.argv[2], int(sys.argv[3])
+seen, cursor, pages = [], None, 0
+while True:
+    url = f"{base}/v1/developer/invoices?limit=2" + (f"&cursor={cursor}" if cursor else "")
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+    data = json.load(urllib.request.urlopen(req))["data"]
+    seen += [i["reference"] for i in data["items"]]
+    pages += 1
+    cursor = data["nextCursor"]
+    if not cursor:
+        break
+    assert pages < 100, "pagination does not terminate"
+assert len(seen) == len(set(seen)), f"duplicates across pages: {seen}"
+assert len(seen) == total, f"expected {total} invoices, paged {len(seen)}"
+PY
+[ "$(dcall "$K_LIST" GET "/v1/developer/invoices?status=PAID")" = "200" ] || fail "status filter"
+chk /tmp/d.json 'all(i["status"]=="PAID" for i in d["data"]["items"]) and len(d["data"]["items"])>=1'
+for q in 'limit=51' 'limit=0' 'limit=abc' 'merchantId=00000000-0000-4000-8000-000000000000' 'status=CANCELLED' 'createdBefore=garbage' 'cursor=bm90LWEtY3Vyc29y'; do
+  CODE=$(dcall "$K_LIST" GET "/v1/developer/invoices?$q")
+  [ "$CODE" = "400" ] || fail "bad query accepted: $q ($CODE)"
+done
+grep -q INVALID_CURSOR /tmp/d.json || fail "tampered cursor wrong code"
+echo "    keyset pagination: no skips/duplicates with identical createdAt; bad queries 400"
+
+# --- payment links through the Developer API
+CODE=$(dcall "$K_DEV" POST "/v1/developer/invoices/$REF1/payment-link")
+[ "$CODE" = "201" ] || fail "developer payment link create ($CODE)"
+chk /tmp/d.json 'set(d["data"])=={"created","link"} and set(d["data"]["link"])=={"status","url","createdAt","revokedAt"} and d["data"]["created"] is True and d["data"]["link"]["status"]=="ACTIVE"'
+DEV_URL=$(pj /tmp/d.json 'd["data"]["link"]["url"]')
+[ "$(dcall "$K_DEV" POST "/v1/developer/invoices/$REF1/payment-link")" = "200" ] || fail "payment link repeat should be 200"
+[ "$(dcall "$K_DRO" GET "/v1/developer/invoices/$REF1/payment-link")" = "200" ] || fail "read scope cannot read link"
+chk /tmp/d.json "d['data']['link']['url']=='$DEV_URL'"
+[ "$(pub "${DEV_URL##*/}" /tmp/d_pub.json)" = "200" ] || fail "developer-created link not served"
+chk /tmp/d_pub.json 'd["data"]["state"]=="PAYABLE" and d["data"]["invoice"]["reference"]=="'"$REF1"'"'
+CODE=$(dcall "$K_DEV" POST "/v1/developer/invoices/$INV_ID/payment-link")
+[ "$CODE" = "409" ] && grep -q INVOICE_ALREADY_PAID /tmp/d.json || fail "payment link on a paid invoice ($CODE)"
+[ "$(dcall "$K_DEV" POST "/v1/developer/invoices/INV-AAAAAAAAAAAA/payment-link")" = "404" ] || fail "payment link on unknown reference"
+echo "    payment links: create/repeat/read by scope; paid invoice 409"
+
+# --- legacy dashboard route keeps its shape for pre-existing integrations
+[ "$(curl -s -o /tmp/d.json -w '%{http_code}' -H "x-api-key: $K_LEG" "$BASE/v1/invoices/$REF1")" = "200" ] || fail "legacy invoice route"
+chk /tmp/d.json '"id" in d["data"] and "qris" in d["data"]'
+echo "    legacy /v1/invoices unchanged"
+
+# --- nothing can mark paid through the Developer API
+for p in "/v1/developer/invoices/$REF1/confirm-payment" "/v1/developer/invoices/$REF1/pay" "/v1/developer/invoices/$REF1"; do
+  for m in POST PUT PATCH DELETE; do
+    CODE=$(dcall "$K_DEV" "$m" "$p" -H "$DEVJ" -d '{"status":"PAID"}')
+    case "$CODE" in 404|400|405|401|403) ;; *) fail "unexpected $m $p -> $CODE" ;; esac
+  done
+done
+[ "$(db "SELECT status FROM invoices WHERE \"publicId\" = '$REF1'")" = "PENDING" ] || fail "an API key changed an invoice status"
+echo "    no developer route can mark an invoice paid"
+
+# --- per-key rate limit (separate bucket per key; IP limiter untouched at this volume)
+mkkey '{"name":"rl","scopes":["invoices:write"]}'; K_RL="$KEY_PLAIN"
+RL=0
+for _ in $(seq 1 36); do
+  C=$(dcall "$K_RL" POST /v1/developer/invoices -H "$DEVJ" -d '{"amount":0,"qrisId":"x"}')
+  if [ "$C" = "429" ]; then RL=$((RL + 1)); fi
+done
+[ "$RL" -ge 1 ] || fail "per-key rate limit never triggered"
+grep -q RATE_LIMITED /tmp/d.json || fail "429 wrong error code"
+grep -qi '^retry-after:' /tmp/d.hdr || fail "429 without Retry-After"
+CODE=$(dcall "$K_LIST" POST /v1/developer/invoices -H "$DEVJ" -d "{\"amount\":7000,\"description\":\"after-rl\",\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "201" ] || fail "another key was throttled by K_RL's bucket ($CODE)"
+echo "    per-key rate limit: ${RL} x 429 for the noisy key, other keys unaffected"
+
+for k in "$K_DEV" "$K_DRO" "$K_LIST" "$KEY_B" "$K_RL"; do
+  if grep -qF -e "$k" /tmp/kirana-api.log; then fail "an API key appears in the API log"; fi
+done
+for v in "$IK" "$PK" "$FK"; do
+  if grep -qF -e "$v" /tmp/kirana-api.log; then fail "an Idempotency-Key appears in the API log"; fi
+done
+echo "    no key or idempotency key in the API log"
+
 echo "==> revoke + archive"
 # select KEY_A by its hash: the list is newest-first and other keys exist by now
 KEY_ID=$(db "SELECT id FROM api_keys WHERE \"keyHash\" = '$(printf '%s' "$KEY_A" | sha256sum | cut -d' ' -f1)'")
@@ -505,6 +690,16 @@ curl -sf -b "$JAR_A" -X DELETE "$BASE/v1/qris/$QRIS_ID" >/dev/null
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -X POST "$BASE/v1/qr/convert" -F "qrisId=$QRIS_ID" -F "amount=5000")
 [ "$CODE" = "400" ] || fail "archived qris still convertible ($CODE)"
 echo "    revocation + archive ok"
+
+# Last on purpose: it exhausts the public endpoint bucket for this IP for a minute.
+echo "==> public endpoint rate limit"
+RL=0
+for _ in $(seq 1 75); do
+  C=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/public/payment-links/$T2")
+  if [ "$C" = "429" ]; then RL=$((RL + 1)); fi
+done
+[ "$RL" -ge 1 ] || fail "public endpoint is not rate limited"
+echo "    public endpoint rate limited ($RL x 429)"
 
 echo "==> logout invalidates session"
 curl -sf -b "$JAR_A" -c "$JAR_A" -X POST "$BASE/v1/auth/logout" >/dev/null

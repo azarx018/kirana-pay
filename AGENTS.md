@@ -93,6 +93,10 @@ Branch: `feat/mvp-v3-payment-link`. Dokumen: `docs/v3/PLAN.md` (audit + keputusa
 Branch: `feat/mvp-v4-developer-api-webhook`. Rencana + keputusan yang disetujui pemilik: `docs/v4/PLAN.md`.
 - Stage 2 selesai: API key punya `scopes`, `expiresAt`, audit pembuat/pencabut, rotasi atomik, `Authorization: Bearer`
   (plus `x-api-key` lama). `ScopeGuard` + `@RequireScopes()` setelah autentikasi. Tidak ada scope untuk menandai lunas.
+- Stage 3 selesai: `/v1/developer/*` (key only, DTO publik stabil, `Idempotency-Key`, keyset pagination, strict fields
+  lewat `StrictFieldsGuard`, throttler per-key, body JSON maks 32 kb). Route lama `/v1/invoices` tidak diubah bentuknya.
+  Catatan penting: pipe global `whitelist:true` membuang field tak dikenal SEBELUM pipe route; penolakan eksplisit harus
+  lewat guard (`@StrictFields`), jangan lewat `@UsePipes`.
 - Aturan: API key tidak boleh menjangkau `confirm-payment` (session only). Jangan menambah scope tanpa migrasi
   (CHECK constraint `chk_api_keys_scopes` mengunci himpunan scope).
 - `scripts/check-migration-api-keys.cjs` memverifikasi migrasi di DB scratch (menolak nama DB tanpa "test"/"scratch").

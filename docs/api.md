@@ -27,6 +27,7 @@ Errors always use:
 | `INVALID_CREDENTIALS` | 401 | wrong email/password |
 | `UNAUTHORIZED` | 401 | no session, or invalid / revoked / expired API key (one generic message) |
 | `INSUFFICIENT_SCOPE` | 403 | the API key lacks the scope this route needs |
+| `RATE_LIMITED` | 429 | too many requests (per IP or per API key); see `Retry-After` |
 | `INVALID_FILE_TYPE` | 400 | missing/empty file, not PNG/JPEG |
 | `FILE_TOO_LARGE` | 400/413 | exceeds `MAX_UPLOAD_BYTES` |
 | `INVALID_AMOUNT` | 400 | not a positive integer in range |
@@ -237,6 +238,46 @@ Guarantees:
   state, QR). No internal ids, QRIS data, emails or phone numbers.
 - Link audit (creator, revoker, timestamps) lives on `payment_links`; `invoice_events` is unchanged.
 - Environment: `PUBLIC_BASE_URL` (public origin, used to build `/pay/<token>`), `PAYMENT_LINK_SECRET` (>= 32 chars).
+
+## Developer API (MVP V4)
+
+Server-to-server routes for a merchant's backend. **API key only** (`Authorization: Bearer kp_live_…`): a dashboard
+session is rejected. Each route needs a scope (see "API keys"). The merchant always comes from the key, never from the
+request. Responses use a small, stable public contract (`reference` is the only identifier you need) that does not change
+when the dashboard does; the dashboard's own `/v1/invoices` routes keep their existing shape.
+
+| Method | Path | Scope | Notes |
+|---|---|---|---|
+| POST | `/v1/developer/invoices` | `invoices:write` | create a PENDING invoice. `Idempotency-Key` supported. |
+| GET | `/v1/developer/invoices` | `invoices:read` | list, newest first. `status`, `createdBefore`, `createdAfter`, `limit` (1-50, default 20), `cursor` |
+| GET | `/v1/developer/invoices/:reference` | `invoices:read` | `reference` is the `INV-…` id. Unknown, malformed and other merchants' references all answer the same `404`. |
+| POST | `/v1/developer/invoices/:reference/payment-link` | `payment_links:write` | create or return the active link (`201` new, `200` existing) |
+| GET | `/v1/developer/invoices/:reference/payment-link` | `payment_links:read` | `{ "link": null }` if none |
+
+Invoice object: `reference, amount (integer IDR), currency, description, status (PENDING|PAID|EXPIRED), createdAt, expiresAt, paidAt`.
+Create body: `amount`, `qrisId` (copy from the dashboard QRIS tab), optional `description`, `expiresInMinutes`.
+
+- **Strict input.** Unknown body fields or query parameters (`status`, `paidAt`, `merchantId`, …) are rejected with
+  `400`, never silently ignored. `Content-Type: application/json` is required (`415` otherwise). Bodies over 32 kB
+  get `413 PAYLOAD_TOO_LARGE`. **No route can mark an invoice paid.**
+- **Idempotency.** Send `Idempotency-Key: <8-128 chars of A-Z a-z 0-9 _ . : ->` on create. Same key + same request returns
+  the original invoice (`200`, header `Idempotent-Replayed: true`, current status); same key + a different request is
+  `409 IDEMPOTENCY_CONFLICT`; a concurrent duplicate still being processed is `409 IDEMPOTENCY_IN_PROGRESS`
+  (`Retry-After: 1`: retry the same request). A failed attempt releases the key. Keys are remembered for 24 hours,
+  scoped per merchant, and only a hash is stored. The route ignores the header on the dashboard `/v1/invoices`.
+- **Pagination.** Keyset, stable even when invoices share a timestamp: pass the previous `nextCursor` back as `cursor`
+  (opaque; `null` means last page). `INVALID_CURSOR` (400) for anything not issued by the API.
+- **Rate limits.** Per client IP (120/min) and per API key (120/min; create invoice and create payment link 30/min).
+  Over the limit: `429 RATE_LIMITED` with a standard `Retry-After` (seconds).
+- **Errors:** `UNAUTHORIZED` 401, `INSUFFICIENT_SCOPE` 403, `NOT_FOUND` 404, `BAD_REQUEST` 400, `UNSUPPORTED_MEDIA_TYPE` 415,
+  `PAYLOAD_TOO_LARGE` 413, `IDEMPOTENCY_*` 409, `RATE_LIMITED` 429, `INTERNAL_ERROR` 500 (details are never exposed).
+
+```bash
+curl -X POST https://YOUR_HOST/v1/developer/invoices \
+  -H "Authorization: Bearer kp_live_…" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: order-1042-attempt-1" \
+  -d '{"amount":25000,"description":"Order 1042","qrisId":"<qris uuid>"}'
+```
 
 ## Tenant isolation
 

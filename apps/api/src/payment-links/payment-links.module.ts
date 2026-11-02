@@ -9,5 +9,6 @@ import { PublicPaymentLinksController } from './public-payment-links.controller'
   imports: [AuthModule, InvoicesModule],
   controllers: [PaymentLinksController, PublicPaymentLinksController],
   providers: [PaymentLinksService],
+  exports: [PaymentLinksService],
 })
 export class PaymentLinksModule {}

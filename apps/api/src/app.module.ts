@@ -1,13 +1,17 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { KiranaThrottlerGuard } from './common/kirana-throttler.guard';
+import { extractApiKeyCredential } from './auth/api-key-credential';
+import { sha256 } from './auth/tokens';
 import { APP_GUARD } from '@nestjs/core';
 import { ApiKeysModule } from './api-keys/api-keys.module';
 import { AuthModule } from './auth/auth.module';
 import { ApiKey } from './entities/api-key.entity';
 import { InvoiceEvent } from './entities/invoice-event.entity';
 import { Invoice } from './entities/invoice.entity';
+import { IdempotencyRecord } from './entities/idempotency-record.entity';
 import { PaymentLink } from './entities/payment-link.entity';
 import { MerchantMember } from './entities/merchant-member.entity';
 import { MerchantQris } from './entities/merchant-qris.entity';
@@ -22,6 +26,8 @@ import { InitialMultiTenant1700000000000 } from './migrations/1700000000000-Init
 import { Invoices1700000001000 } from './migrations/1700000001000-Invoices';
 import { PaymentLinks1700000002000 } from './migrations/1700000002000-PaymentLinks';
 import { DeveloperApiKeys1700000003000 } from './migrations/1700000003000-DeveloperApiKeys';
+import { Idempotency1700000004000 } from './migrations/1700000004000-Idempotency';
+import { DeveloperModule } from './developer/developer.module';
 import { PaymentLinksModule } from './payment-links/payment-links.module';
 import { ProvidersModule } from './providers/providers.module';
 import { QrModule } from './qr/qr.module';
@@ -32,7 +38,23 @@ import { StorageModule } from './storage/storage.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    ThrottlerModule.forRoot({
+      throttlers: [
+        // per client IP: always applies (also protects against random-key guessing)
+        { name: 'default', ttl: 60_000, limit: 120 },
+        // per API key: only for requests that carry a key; the tracker is a hash, no DB lookup
+        {
+          name: 'apikey',
+          ttl: 60_000,
+          limit: 120,
+          skipIf: (context) => extractApiKeyCredential(context.switchToHttp().getRequest()).kind !== 'key',
+          getTracker: (req) => {
+            const credential = extractApiKeyCredential(req as Parameters<typeof extractApiKeyCredential>[0]);
+            return credential.kind === 'key' ? `key:${sha256(credential.key).slice(0, 24)}` : 'none';
+          },
+        },
+      ],
+    }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -54,8 +76,9 @@ import { StorageModule } from './storage/storage.module';
           Invoice,
           InvoiceEvent,
           PaymentLink,
+          IdempotencyRecord,
         ],
-        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000, PaymentLinks1700000002000, DeveloperApiKeys1700000003000],
+        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000, PaymentLinks1700000002000, DeveloperApiKeys1700000003000, Idempotency1700000004000],
         migrationsRun: true,
         autoLoadEntities: true,
         synchronize: false,
@@ -70,8 +93,9 @@ import { StorageModule } from './storage/storage.module';
     QrModule,
     InvoicesModule,
     PaymentLinksModule,
+    DeveloperModule,
   ],
   controllers: [HealthController],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [{ provide: APP_GUARD, useClass: KiranaThrottlerGuard }],
 })
 export class AppModule {}

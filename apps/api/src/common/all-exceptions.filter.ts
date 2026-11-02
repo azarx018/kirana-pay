@@ -8,6 +8,35 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
+export interface ClientError {
+  status: number;
+  code: string;
+  message: string;
+}
+
+/**
+ * Errors raised by Express middleware (body-parser) before Nest routing are not
+ * HttpExceptions, so they used to surface as 500. They are client mistakes: map them to
+ * 4xx with FIXED messages (the library message can quote the offending request body).
+ */
+export function clientErrorOf(exception: unknown): ClientError | null {
+  if (typeof exception !== 'object' || exception === null) return null;
+  const e = exception as { status?: unknown; statusCode?: unknown; type?: unknown };
+  const status = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : undefined;
+  if (status === undefined || status < 400 || status > 499 || typeof e.type !== 'string') return null;
+  switch (e.type) {
+    case 'entity.too.large':
+      return { status: 413, code: 'PAYLOAD_TOO_LARGE', message: 'Request body is too large.' };
+    case 'entity.parse.failed':
+      return { status: 400, code: 'BAD_REQUEST', message: 'Request body is not valid JSON.' };
+    case 'encoding.unsupported':
+    case 'charset.unsupported':
+      return { status: 415, code: 'UNSUPPORTED_MEDIA_TYPE', message: 'Unsupported content encoding.' };
+    default:
+      return { status, code: 'BAD_REQUEST', message: 'Invalid request.' };
+  }
+}
+
 /**
  * Normalizes every error into the contract:
  * { success: false, error: { code, message } }
@@ -45,8 +74,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       if (status === HttpStatus.UNAUTHORIZED) {
         code = 'UNAUTHORIZED';
       }
+      if (status === HttpStatus.TOO_MANY_REQUESTS) {
+        code = 'RATE_LIMITED';
+        message = 'Too many requests. Please retry later.';
+      }
     } else {
-      this.logger.error(exception instanceof Error ? exception.stack : String(exception));
+      const client = clientErrorOf(exception);
+      if (client) {
+        ({ status, code, message } = client);
+      } else {
+        this.logger.error(exception instanceof Error ? exception.stack : String(exception));
+      }
     }
 
     if (status >= 500) {

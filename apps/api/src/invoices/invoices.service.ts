@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { AuthContext } from '../auth/auth.types';
 import { InvoiceEvent, InvoiceEventType } from '../entities/invoice-event.entity';
 import { Invoice, InvoiceStatus } from '../entities/invoice.entity';
@@ -84,7 +84,15 @@ export class InvoicesService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async create(ctx: AuthContext, dto: CreateInvoiceDto): Promise<InvoiceView> {
+  /**
+   * `hooks.inTransaction` runs inside the SAME database transaction that inserts the invoice
+   * (used for idempotency completion; later for the webhook outbox). If it throws, nothing commits.
+   */
+  async create(
+    ctx: AuthContext,
+    dto: CreateInvoiceDto,
+    hooks?: { inTransaction?: (manager: EntityManager, invoice: { id: string; publicId: string }) => Promise<void> },
+  ): Promise<InvoiceView> {
     let amount: number;
     try {
       amount = parseAmount(dto.amount, { min: this.minAmount, max: this.maxAmount });
@@ -165,6 +173,7 @@ export class InvoicesService {
           actorUserId,
           metadata: { amount, qrisId: qris.id, expiresAt: expiresAt.toISOString() },
         });
+        if (hooks?.inTransaction) await hooks.inTransaction(manager, { id: invoiceId, publicId });
       });
     } catch (error) {
       // Never leave an orphan PNG behind when the row cannot be persisted.
