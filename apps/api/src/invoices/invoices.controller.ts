@@ -3,6 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { ApiKeyOrSessionGuard } from '../auth/api-key.guard';
+import { RequireScopes, ScopeGuard } from '../auth/scope.guard';
 import type { AuthContext } from '../auth/auth.types';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { SessionGuard } from '../auth/session.guard';
@@ -16,11 +17,12 @@ import {
 
 @ApiTags('invoices')
 @Controller('v1/invoices')
-@UseGuards(ApiKeyOrSessionGuard)
+@UseGuards(ApiKeyOrSessionGuard, ScopeGuard)
 export class InvoicesController {
   constructor(private readonly invoices: InvoicesService) {}
 
   @Post()
+  @RequireScopes('invoices:write')
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'Create a PENDING invoice and its amount-specific QR (session or API key)' })
   async create(
@@ -31,6 +33,7 @@ export class InvoicesController {
   }
 
   @Get()
+  @RequireScopes('invoices:read')
   @ApiOperation({ summary: 'List the current merchant invoices (bounded pagination)' })
   async list(
     @CurrentAuth() ctx: AuthContext,
@@ -40,6 +43,7 @@ export class InvoicesController {
   }
 
   @Get(':id')
+  @RequireScopes('invoices:read')
   @ApiOperation({ summary: 'Invoice detail by public id (or uuid), merchant scoped' })
   async detail(
     @CurrentAuth() ctx: AuthContext,
@@ -49,6 +53,7 @@ export class InvoicesController {
   }
 
   @Get(':id/qr')
+  @RequireScopes('invoices:read')
   @ApiOperation({ summary: 'Download the invoice QR image (merchant scoped)' })
   async readQr(
     @CurrentAuth() ctx: AuthContext,

@@ -348,7 +348,10 @@ CODE=$(pub "$T4" /tmp/pl_exp2.json)
 chk /tmp/pl_exp2.json 'd["data"]["state"]=="EXPIRED" and d["data"]["qrImageDataUrl"] is None'
 echo "    expiry judged server-side, read-only, QR hidden, create refused (410)"
 
-if grep -qE "$PL_TOKEN|$T1|$T2|$T4" /tmp/kirana-api.log; then fail "a payment link token appears in the API log"; fi
+for tok in "$PL_TOKEN" "$T1" "$T2" "$T4"; do
+  # -F: literal match; -e: tokens may start with "-" and must not be parsed as grep options
+  if grep -qF -e "$tok" /tmp/kirana-api.log; then fail "a payment link token appears in the API log"; fi
+done
 
 RL=0
 for _ in $(seq 1 75); do
@@ -358,8 +361,143 @@ done
 [ "$RL" -ge 1 ] || fail "public endpoint is not rate limited"
 echo "    public endpoint rate limited ($RL x 429); tokens absent from logs"
 
+echo "==> api keys: scopes, bearer, expiry, revoke, rotate (V4)"
+kcall() { curl -s -o /tmp/k.json -w '%{http_code}' "$@"; }
+pj() { python3.12 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+JSON='content-type: application/json'
+mkkey() { # $1 = JSON body ; sets KEY_ID / KEY_PLAIN
+  curl -s -D /tmp/k.hdr -b "$JAR_A" -X POST "$BASE/v1/api-keys" -H "$JSON" -d "$1" -o /tmp/k_new.json
+  KEY_ID=$(pj /tmp/k_new.json 'd["data"]["id"]'); KEY_PLAIN=$(pj /tmp/k_new.json 'd["data"]["key"]')
+}
+
+# validation
+for body in '{"scopes":[]}' '{"scopes":["admin"]}' '{"scopes":["invoices:read","invoices:confirm"]}' '{"scopes":"invoices:read"}'; do
+  CODE=$(kcall -b "$JAR_A" -X POST "$BASE/v1/api-keys" -H "$JSON" -d "$body")
+  [ "$CODE" = "400" ] || fail "key create accepted bad scopes $body ($CODE)"
+done
+CODE=$(kcall -b "$JAR_A" -X POST "$BASE/v1/api-keys" -H "$JSON" -d '{"scopes":["invoices:read"],"expiresAt":"2020-01-01T00:00:00Z"}')
+[ "$CODE" = "400" ] && grep -q INVALID_EXPIRY /tmp/k.json || fail "past expiry accepted ($CODE)"
+
+# legacy-compatible default scopes (the pre-V4 dashboard sends only a name)
+mkkey '{"name":"legacy"}'
+chk /tmp/k_new.json 'd["data"]["scopes"]==["invoices:read","invoices:write","qr:convert"] and d["data"]["status"]=="ACTIVE" and d["data"]["key"].startswith("kp_live_")'
+grep -qi '^cache-control: no-store' /tmp/k.hdr || fail "issued key response is cacheable"
+K_LEG="$KEY_PLAIN"
+[ "$(kcall -H "Authorization: Bearer $K_LEG" "$BASE/v1/invoices")" = "200" ] || fail "legacy key via Bearer"
+[ "$(kcall -H "x-api-key: $K_LEG" "$BASE/v1/invoices")" = "200" ] || fail "legacy key via x-api-key"
+[ "$(kcall -H "x-api-key: $K_LEG" "$BASE/v1/qr")" = "200" ] || fail "legacy key lost /v1/qr access"
+echo "    omitted scopes -> legacy defaults; Bearer and x-api-key both work"
+
+# plaintext never stored; list never returns it
+EXPECTED_HASH=$(printf '%s' "$K_LEG" | sha256sum | cut -d' ' -f1)
+[ "$(db "SELECT \"keyHash\" FROM api_keys WHERE id = '$KEY_ID'")" = "$EXPECTED_HASH" ] || fail "stored value is not the SHA-256 hash"
+[ "$(db "SELECT count(*) FROM api_keys WHERE \"keyHash\" = '$K_LEG'")" = "0" ] || fail "plaintext key stored"
+curl -sf -b "$JAR_A" "$BASE/v1/api-keys" -o /tmp/k_list.json
+if grep -qF -e "$K_LEG" /tmp/k_list.json; then fail "list endpoint leaks the key"; fi
+chk /tmp/k_list.json 'all("key" not in k and "keyHash" not in k for k in d["data"])'
+echo "    only the hash is stored; list never returns the key"
+
+# scope enforcement happens before business logic
+mkkey '{"name":"read-only","scopes":["invoices:read"]}'; K_RO="$KEY_PLAIN"; K_RO_ID="$KEY_ID"
+INV_BEFORE=$(db "SELECT count(*) FROM invoices")
+CODE=$(kcall -H "Authorization: Bearer $K_RO" -X POST "$BASE/v1/invoices" -H "$JSON" -d "{\"amount\":9000,\"qrisId\":\"$QRIS_ID\"}")
+[ "$CODE" = "403" ] && grep -q INSUFFICIENT_SCOPE /tmp/k.json || fail "read-only key created an invoice ($CODE)"
+[ "$(db "SELECT count(*) FROM invoices")" = "$INV_BEFORE" ] || fail "403 still created an invoice"
+[ "$(kcall -H "x-api-key: $K_RO" "$BASE/v1/qr")" = "403" ] || fail "read-only key reached /v1/qr"
+[ "$(kcall -H "x-api-key: $K_RO" "$BASE/v1/invoices")" = "200" ] || fail "read-only key cannot read"
+mkkey '{"name":"write-only","scopes":["invoices:write"]}'; K_WO="$KEY_PLAIN"
+[ "$(kcall -H "x-api-key: $K_WO" "$BASE/v1/invoices")" = "403" ] || fail "write-only key can read"
+[ "$(kcall -H "Authorization: Bearer $K_WO" -X POST "$BASE/v1/invoices" -H "$JSON" -d "{\"amount\":9100,\"qrisId\":\"$QRIS_ID\"}")" = "201" ] || fail "write key cannot create"
+echo "    insufficient scope -> 403 before any work"
+
+# no key can ever mark an invoice paid
+for k in "$K_LEG" "$K_WO" "$K_RO"; do
+  CODE=$(kcall -H "Authorization: Bearer $k" -X POST "$BASE/v1/invoices/$PL2/confirm-payment")
+  [ "$CODE" = "401" ] || fail "API key reached confirm-payment ($CODE)"
+done
+[ "$(db "SELECT status FROM invoices WHERE \"publicId\" = '$PL2'")" = "PENDING" ] || fail "an API key changed invoice status"
+echo "    API keys cannot confirm payment (401), invoice still PENDING"
+
+# ambiguous / misplaced credentials
+[ "$(kcall -H "Authorization: Bearer $K_LEG" -H "x-api-key: $K_RO" "$BASE/v1/invoices")" = "401" ] || fail "conflicting headers accepted"
+[ "$(kcall "$BASE/v1/invoices?api_key=$K_LEG&x-api-key=$K_LEG")" = "401" ] || fail "key in query string accepted"
+[ "$(kcall -H "Authorization: Bearer ${K_LEG}x" "$BASE/v1/invoices")" = "401" ] || fail "tampered key accepted"
+if grep -qF -e "$K_LEG" /tmp/k.json; then fail "401 body echoes the key"; fi
+echo "    conflicting headers / query-string keys / tampered keys -> 401"
+
+# tenant isolation of key management
+[ "$(kcall -b "$JAR_B" -X DELETE "$BASE/v1/api-keys/$K_RO_ID")" = "404" ] || fail "merchant B revoked A's key"
+[ "$(kcall -b "$JAR_B" -X POST "$BASE/v1/api-keys/$K_RO_ID/rotate")" = "404" ] || fail "merchant B rotated A's key"
+[ "$(kcall -H "x-api-key: $K_RO" "$BASE/v1/invoices")" = "200" ] || fail "A's key broke after B's attempts"
+echo "    other merchant cannot revoke or rotate"
+
+# last-used is throttled, not written on every request
+sleep 1
+LU1=$(db "SELECT extract(epoch FROM \"lastUsedAt\") FROM api_keys WHERE id = '$K_RO_ID'")
+[ -n "$LU1" ] || fail "lastUsedAt not recorded"
+kcall -H "x-api-key: $K_RO" "$BASE/v1/invoices" >/dev/null; sleep 1
+[ "$(db "SELECT extract(epoch FROM \"lastUsedAt\") FROM api_keys WHERE id = '$K_RO_ID'")" = "$LU1" ] || fail "lastUsedAt written on every request"
+echo "    lastUsedAt recorded once, not rewritten per request"
+
+# expiry
+mkkey "{\"name\":\"short\",\"scopes\":[\"invoices:read\"],\"expiresAt\":\"$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)\"}"
+K_EXP="$KEY_PLAIN"; K_EXP_ID="$KEY_ID"
+[ "$(kcall -H "x-api-key: $K_EXP" "$BASE/v1/invoices")" = "200" ] || fail "unexpired key rejected"
+db "UPDATE api_keys SET \"expiresAt\" = now() - interval '1 minute' WHERE id = '$K_EXP_ID'" >/dev/null
+[ "$(kcall -H "x-api-key: $K_EXP" "$BASE/v1/invoices")" = "401" ] || fail "expired key accepted"
+curl -sf -b "$JAR_A" "$BASE/v1/api-keys" -o /tmp/k_list.json
+chk /tmp/k_list.json "[k for k in d['data'] if k['id']=='$K_EXP_ID'][0]['status']=='EXPIRED'"
+CODE=$(kcall -b "$JAR_A" -X POST "$BASE/v1/api-keys/$K_EXP_ID/rotate")
+[ "$CODE" = "409" ] && grep -q API_KEY_EXPIRED /tmp/k.json || fail "expired key was rotated ($CODE)"
+echo "    expired key -> 401, shown as EXPIRED, cannot be rotated"
+
+# revoke: immediate, idempotent, permanent
+mkkey '{"name":"to-revoke","scopes":["invoices:read"]}'; K_REV="$KEY_PLAIN"; K_REV_ID="$KEY_ID"
+[ "$(kcall -H "x-api-key: $K_REV" "$BASE/v1/invoices")" = "200" ] || fail "fresh key rejected"
+[ "$(kcall -b "$JAR_A" -X DELETE "$BASE/v1/api-keys/$K_REV_ID")" = "200" ] || fail "revoke"
+[ "$(kcall -H "x-api-key: $K_REV" "$BASE/v1/invoices")" = "401" ] || fail "revoked key still works"
+REV_AT=$(db "SELECT extract(epoch FROM \"revokedAt\") FROM api_keys WHERE id = '$K_REV_ID'")
+[ "$(kcall -b "$JAR_A" -X DELETE "$BASE/v1/api-keys/$K_REV_ID")" = "200" ] || fail "second revoke not idempotent"
+[ "$(db "SELECT extract(epoch FROM \"revokedAt\") FROM api_keys WHERE id = '$K_REV_ID'")" = "$REV_AT" ] || fail "second revoke rewrote revokedAt"
+[ -n "$(db "SELECT \"revokedByUserId\" FROM api_keys WHERE id = '$K_REV_ID'")" ] || fail "revoker not recorded"
+CODE=$(kcall -b "$JAR_A" -X POST "$BASE/v1/api-keys/$K_REV_ID/rotate")
+[ "$CODE" = "409" ] && grep -q API_KEY_REVOKED /tmp/k.json || fail "revoked key was rotated ($CODE)"
+[ "$(kcall -H "x-api-key: $K_REV" "$BASE/v1/invoices")" = "401" ] || fail "revoked key came back"
+echo "    revoke immediate + idempotent; revoked key can never return"
+
+# rotate: atomic, inherits scopes/expiry, old key dies at once
+mkkey "{\"name\":\"rot\",\"scopes\":[\"invoices:read\",\"qr:convert\"],\"expiresAt\":\"$(date -u -d '+30 days' +%Y-%m-%dT%H:%M:%SZ)\"}"
+K_OLD="$KEY_PLAIN"; K_OLD_ID="$KEY_ID"; OLD_EXP=$(pj /tmp/k_new.json 'd["data"]["expiresAt"]')
+CODE=$(kcall -b "$JAR_A" -X POST "$BASE/v1/api-keys/$K_OLD_ID/rotate")
+[ "$CODE" = "201" ] || fail "rotate ($CODE)"
+K_NEW=$(pj /tmp/k.json 'd["data"]["key"]')
+chk /tmp/k.json "d['data']['id']!='$K_OLD_ID' and d['data']['rotatedFromId']=='$K_OLD_ID' and d['data']['scopes']==['invoices:read','qr:convert'] and d['data']['expiresAt']=='$OLD_EXP' and d['data']['status']=='ACTIVE'"
+[ "$K_NEW" != "$K_OLD" ] || fail "rotation reused the key"
+[ "$(kcall -H "x-api-key: $K_OLD" "$BASE/v1/invoices")" = "401" ] || fail "old key survived rotation"
+[ "$(kcall -H "Authorization: Bearer $K_NEW" "$BASE/v1/invoices")" = "200" ] || fail "new key rejected"
+[ -n "$(db "SELECT \"revokedByUserId\" FROM api_keys WHERE id = '$K_OLD_ID'")" ] || fail "rotation actor not recorded"
+echo "    rotate: new key inherits scopes+expiry, old key dead immediately"
+
+mkkey '{"name":"race","scopes":["invoices:read"]}'; RACE_ID="$KEY_ID"
+RPIDS=()
+for i in 1 2 3 4 5; do
+  curl -s -o /dev/null -w '%{http_code}\n' -b "$JAR_A" -X POST "$BASE/v1/api-keys/$RACE_ID/rotate" &
+  RPIDS+=($!)
+done >/tmp/k_race.txt
+wait "${RPIDS[@]}"
+[ "$(grep -c '^201$' /tmp/k_race.txt)" = "1" ] && [ "$(grep -c '^409$' /tmp/k_race.txt)" = "4" ] || fail "concurrent rotation: $(tr '\n' ' ' </tmp/k_race.txt)"
+[ "$(db "SELECT count(*) FROM api_keys WHERE \"rotatedFromId\" = '$RACE_ID'")" = "1" ] || fail "concurrent rotation made more than one successor"
+echo "    5 concurrent rotations -> exactly one successor"
+
+for k in "$K_LEG" "$K_RO" "$K_WO" "$K_EXP" "$K_REV" "$K_OLD" "$K_NEW"; do
+  if grep -qF -e "$k" /tmp/kirana-api.log; then fail "an API key appears in the API log"; fi
+done
+echo "    no key appears in the API log"
+
 echo "==> revoke + archive"
-KEY_ID=$(curl -sf -b "$JAR_A" "$BASE/v1/api-keys" | python3.12 -c 'import sys,json; print(json.load(sys.stdin)["data"][0]["id"])')
+# select KEY_A by its hash: the list is newest-first and other keys exist by now
+KEY_ID=$(db "SELECT id FROM api_keys WHERE \"keyHash\" = '$(printf '%s' "$KEY_A" | sha256sum | cut -d' ' -f1)'")
+[ -n "$KEY_ID" ] || fail "could not locate KEY_A"
 curl -sf -b "$JAR_A" -X DELETE "$BASE/v1/api-keys/$KEY_ID" >/dev/null
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/qr/convert" -H "x-api-key: $KEY_A" -F "qrisId=$QRIS_ID" -F "amount=5000")
 [ "$CODE" = "401" ] || fail "revoked key still works ($CODE)"

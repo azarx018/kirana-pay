@@ -17,13 +17,15 @@ import { ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { ApiKeyOrSessionGuard } from '../auth/api-key.guard';
+import { RequireScopes, ScopeGuard } from '../auth/scope.guard';
 import { AuthContext } from '../auth/auth.types';
 import { CurrentAuth } from '../auth/current-auth.decorator';
 import { QrService, type ConvertResult } from './qr.service';
 
 @ApiTags('qr')
 @Controller('v1/qr')
-@UseGuards(ApiKeyOrSessionGuard)
+@UseGuards(ApiKeyOrSessionGuard, ScopeGuard)
+@RequireScopes('qr:convert')
 export class QrController {
   constructor(private readonly qr: QrService) {}
 

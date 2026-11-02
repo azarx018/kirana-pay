@@ -21,6 +21,24 @@ export class ApiKey {
   @Column({ type: 'varchar', length: 64 })
   keyHash!: string;
 
+  /** Granted permissions (see auth/scopes.ts). Enforced before business logic. */
+  @Column({ type: 'text', array: true, default: () => "'{}'" })
+  scopes!: string[];
+
+  /** Optional hard expiry; an expired key is rejected exactly like a revoked one. */
+  @Column({ type: 'timestamptz', nullable: true })
+  expiresAt!: Date | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  createdByUserId!: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  revokedByUserId!: string | null;
+
+  /** Set on the new key when it was issued by rotating another one. */
+  @Column({ type: 'uuid', nullable: true })
+  rotatedFromId!: string | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   lastUsedAt!: Date | null;
 

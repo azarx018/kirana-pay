@@ -5,4 +5,6 @@ export interface AuthContext {
   via: 'session' | 'api-key';
   sessionId?: string;
   apiKeyId?: string;
+  /** Only set for API-key callers; sessions are not scope-limited. */
+  scopes?: readonly string[];
 }

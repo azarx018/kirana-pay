@@ -21,6 +21,7 @@ import { MerchantModule } from './merchant/merchant.module';
 import { InitialMultiTenant1700000000000 } from './migrations/1700000000000-InitialMultiTenant';
 import { Invoices1700000001000 } from './migrations/1700000001000-Invoices';
 import { PaymentLinks1700000002000 } from './migrations/1700000002000-PaymentLinks';
+import { DeveloperApiKeys1700000003000 } from './migrations/1700000003000-DeveloperApiKeys';
 import { PaymentLinksModule } from './payment-links/payment-links.module';
 import { ProvidersModule } from './providers/providers.module';
 import { QrModule } from './qr/qr.module';
@@ -54,7 +55,7 @@ import { StorageModule } from './storage/storage.module';
           InvoiceEvent,
           PaymentLink,
         ],
-        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000, PaymentLinks1700000002000],
+        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000, PaymentLinks1700000002000, DeveloperApiKeys1700000003000],
         migrationsRun: true,
         autoLoadEntities: true,
         synchronize: false,

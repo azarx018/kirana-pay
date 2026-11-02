@@ -7,9 +7,12 @@ Base URL: `http://localhost:3000` · Swagger: `/docs` · Dashboard: `/`
 Two ways to authenticate. Both resolve to a **merchant context**; every query is scoped to it.
 
 1. **Session cookie** (dashboard): `POST /v1/auth/login` sets `kirana_session`, httpOnly, SameSite=Lax, 14 days.
-2. **Merchant API key** (programmatic): header `x-api-key: kp_live_…`.
+2. **Merchant API key** (programmatic, server-to-server): `Authorization: Bearer kp_live_…` (preferred) or the
+   legacy `x-api-key: kp_live_…`. Never in a query string or body. Sending both headers with different values
+   is rejected (`401`). Keep keys on your server, never in browser code.
 
-`/v1/qr/*` accepts either. Every other `/v1/*` route requires a session.
+Routes that accept an API key: `/v1/qr/*` and `/v1/invoices` (create, list, detail, qr), each **gated by a scope**
+(below). Everything else requires a session. No API key can ever confirm a payment.
 
 Errors always use:
 
@@ -22,7 +25,8 @@ Errors always use:
 | `INVALID_EMAIL` / `WEAK_PASSWORD` | 400 | registration input invalid |
 | `EMAIL_TAKEN` | 409 | email already registered |
 | `INVALID_CREDENTIALS` | 401 | wrong email/password |
-| `UNAUTHORIZED` | 401 | no session, invalid/revoked API key |
+| `UNAUTHORIZED` | 401 | no session, or invalid / revoked / expired API key (one generic message) |
+| `INSUFFICIENT_SCOPE` | 403 | the API key lacks the scope this route needs |
 | `INVALID_FILE_TYPE` | 400 | missing/empty file, not PNG/JPEG |
 | `FILE_TOO_LARGE` | 400/413 | exceeds `MAX_UPLOAD_BYTES` |
 | `INVALID_AMOUNT` | 400 | not a positive integer in range |
@@ -130,14 +134,30 @@ curl -X POST http://localhost:3000/v1/qr/convert -H "x-api-key: kp_live_…" \
 
 ## API keys
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/v1/api-keys` | list (prefix + status; never the secret) |
-| POST | `/v1/api-keys` | `{name?}` → `key` returned **once** |
-| DELETE | `/v1/api-keys/:id` | revoke |
-| POST | `/v1/api-keys/:id/rotate` | revoke + create replacement (returns new plaintext once) |
+Session + **owner** only. A key belongs to exactly one merchant; only its SHA-256 hash is stored and the full
+secret is returned **once** (create / rotate, with `Cache-Control: no-store`).
 
-Keys are stored as SHA-256 hashes with a `kp_live_…` prefix shown in the UI.
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/v1/api-keys` | list: prefix, scopes, `status` (`ACTIVE`/`REVOKED`/`EXPIRED`), `expiresAt`, `lastUsedAt`, `rotatedFromId` (never the secret) |
+| POST | `/v1/api-keys` | `{name?, scopes?, expiresAt?}` → `key` returned once |
+| DELETE | `/v1/api-keys/:id` | revoke: immediate, idempotent (keeps the first `revokedAt`) |
+| POST | `/v1/api-keys/:id/rotate` | atomic: old key dies at once (no grace period), new key inherits name, scopes and expiry |
+
+**Scopes** (enforced before any business logic; sessions are not scope-limited):
+
+| Scope | Allows |
+|---|---|
+| `invoices:read` | `GET /v1/invoices`, `/v1/invoices/:id`, `/v1/invoices/:id/qr` |
+| `invoices:write` | `POST /v1/invoices` |
+| `qr:convert` | `/v1/qr/*` (convert and read your own QR jobs) |
+| `payment_links:read`, `payment_links:write` | reserved for the Developer API payment-link routes |
+
+There is deliberately **no scope that marks an invoice paid**. If `scopes` is omitted on create, the pre-V4 default
+(`invoices:read`, `invoices:write`, `qr:convert`) is applied so the existing dashboard keeps working; keys that existed
+before V4 were backfilled with exactly that set. `expiresAt` is optional (future, within 366 days); an expired key
+behaves like a revoked one. A revoked or expired key cannot be rotated (`409 API_KEY_REVOKED` / `API_KEY_EXPIRED`).
+`lastUsedAt` is refreshed at most every 5 minutes, not on every request.
 
 ## Invoices (MVP V2)
 

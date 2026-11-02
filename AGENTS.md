@@ -88,6 +88,15 @@ Branch: `feat/mvp-v3-payment-link`. Dokumen: `docs/v3/PLAN.md` (audit + keputusa
 - Env baru: `PUBLIC_BASE_URL`, `PAYMENT_LINK_SECRET` (wajib di production, jika tidak fitur membalas 503).
 - Status `CANCELLED` tidak ada (ADR 0001). Jangan ditambahkan tanpa keputusan pemilik.
 
+## 4c. MVP V4 — Developer API & Webhook (sedang dikerjakan)
+
+Branch: `feat/mvp-v4-developer-api-webhook`. Rencana + keputusan yang disetujui pemilik: `docs/v4/PLAN.md`.
+- Stage 2 selesai: API key punya `scopes`, `expiresAt`, audit pembuat/pencabut, rotasi atomik, `Authorization: Bearer`
+  (plus `x-api-key` lama). `ScopeGuard` + `@RequireScopes()` setelah autentikasi. Tidak ada scope untuk menandai lunas.
+- Aturan: API key tidak boleh menjangkau `confirm-payment` (session only). Jangan menambah scope tanpa migrasi
+  (CHECK constraint `chk_api_keys_scopes` mengunci himpunan scope).
+- `scripts/check-migration-api-keys.cjs` memverifikasi migrasi di DB scratch (menolak nama DB tanpa "test"/"scratch").
+
 ## 5. Rencana: verifikasi pembayaran otomatis (BELUM DIBUAT)
 
 Dua jalur direncanakan, keduanya bermuara ke satu aturan matching di backend:
