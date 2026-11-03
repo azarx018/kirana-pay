@@ -28,6 +28,13 @@ import { PaymentLinks1700000002000 } from './migrations/1700000002000-PaymentLin
 import { DeveloperApiKeys1700000003000 } from './migrations/1700000003000-DeveloperApiKeys';
 import { Idempotency1700000004000 } from './migrations/1700000004000-Idempotency';
 import { DeveloperModule } from './developer/developer.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { WebhookDeliveryAttempt } from './entities/webhook-delivery-attempt.entity';
+import { WebhookDelivery } from './entities/webhook-delivery.entity';
+import { WebhookEndpointAudit } from './entities/webhook-endpoint-audit.entity';
+import { WebhookEndpoint } from './entities/webhook-endpoint.entity';
+import { WebhookEvent } from './entities/webhook-event.entity';
+import { Webhooks1700000005000 } from './migrations/1700000005000-Webhooks';
 import { PaymentLinksModule } from './payment-links/payment-links.module';
 import { ProvidersModule } from './providers/providers.module';
 import { QrModule } from './qr/qr.module';
@@ -77,8 +84,20 @@ import { StorageModule } from './storage/storage.module';
           InvoiceEvent,
           PaymentLink,
           IdempotencyRecord,
+          WebhookEndpoint,
+          WebhookEndpointAudit,
+          WebhookEvent,
+          WebhookDelivery,
+          WebhookDeliveryAttempt,
         ],
-        migrations: [InitialMultiTenant1700000000000, Invoices1700000001000, PaymentLinks1700000002000, DeveloperApiKeys1700000003000, Idempotency1700000004000],
+        migrations: [
+          InitialMultiTenant1700000000000,
+          Invoices1700000001000,
+          PaymentLinks1700000002000,
+          DeveloperApiKeys1700000003000,
+          Idempotency1700000004000,
+          Webhooks1700000005000,
+        ],
         migrationsRun: true,
         autoLoadEntities: true,
         synchronize: false,
@@ -94,6 +113,7 @@ import { StorageModule } from './storage/storage.module';
     InvoicesModule,
     PaymentLinksModule,
     DeveloperModule,
+    WebhooksModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: KiranaThrottlerGuard }],

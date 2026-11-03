@@ -19,6 +19,7 @@ import { User } from '../entities/user.entity';
 import { parseAmount } from '../qr/amount.util';
 import { QrEngineClient, QrEngineError } from '../qr/qr-engine.client';
 import { FILE_STORAGE, type FileStorage } from '../storage/storage.interface';
+import { WebhookEventsService } from '../webhooks/webhook-events.service';
 import {
   buildExpiresAt,
   buildPublicId,
@@ -82,6 +83,7 @@ export class InvoicesService {
     @Inject(FILE_STORAGE) private readonly storage: FileStorage,
     private readonly engine: QrEngineClient,
     private readonly dataSource: DataSource,
+    private readonly webhooks: WebhookEventsService,
   ) {}
 
   /**
@@ -172,6 +174,21 @@ export class InvoicesService {
           type: 'CREATED' as InvoiceEventType,
           actorUserId,
           metadata: { amount, qrisId: qris.id, expiresAt: expiresAt.toISOString() },
+        });
+        // Outbox row lives in this same transaction: no commit = no event.
+        await this.webhooks.enqueue(manager, {
+          merchantId: ctx.merchantId,
+          type: 'invoice.created',
+          invoiceId,
+          invoice: {
+            reference: publicId,
+            amount,
+            currency: 'IDR',
+            status: 'PENDING',
+            createdAt: new Date().toISOString(),
+            expiresAt: expiresAt.toISOString(),
+            paidAt: null,
+          },
         });
         if (hooks?.inTransaction) await hooks.inTransaction(manager, { id: invoiceId, publicId });
       });
@@ -293,6 +310,20 @@ export class InvoicesService {
          VALUES ($1, 'PAYMENT_CONFIRMED', $2, $3)`,
         [invoice.id, ctx.userId, JSON.stringify({ method: 'MANUAL_MERCHANT' })],
       );
+      await this.webhooks.enqueue(manager, {
+        merchantId: ctx.merchantId,
+        type: 'invoice.paid',
+        invoiceId: invoice.id,
+        invoice: {
+          reference: invoice.publicId,
+          amount: Number(invoice.amount),
+          currency: invoice.currency,
+          status: 'PAID',
+          createdAt: invoice.createdAt.toISOString(),
+          expiresAt: invoice.expiresAt.toISOString(),
+          paidAt: new Date().toISOString(),
+        },
+      });
       return true;
     });
 
@@ -310,28 +341,55 @@ export class InvoicesService {
     return this.detail(ctx, idOrPublicId);
   }
 
-  /** Lazy, idempotent expiration: no scheduler/redis needed for this milestone. */
+  /**
+   * Idempotent expiration, now atomic (V4 K3): status change, invoice event and webhook outbox
+   * row commit together, so an EXPIRED invoice always has exactly one event. The worker runs the
+   * same sweep globally every 30s; whoever wins the conditional UPDATE emits the event.
+   */
   async sweepExpired(merchantId: string): Promise<number> {
-    const expired = rowsOf<{ id: string }>(
-      await this.dataSource.query(
+    return this.dataSource.transaction(async (manager) => {
+      const raw = await manager.query(
         `UPDATE "invoices"
-          SET "status" = 'EXPIRED', "updatedAt" = now()
-        WHERE "merchantId" = $1 AND "status" = 'PENDING' AND "expiresAt" <= now()
-          RETURNING "id"`,
+            SET "status" = 'EXPIRED', "updatedAt" = now()
+          WHERE "merchantId" = $1 AND "status" = 'PENDING' AND "expiresAt" <= now()
+          RETURNING "id", "publicId", "amount", "currency", "createdAt", "expiresAt"`,
         [merchantId],
-      ),
-    );
-    if (expired.length === 0) return 0;
+      );
+      // UPDATE ... RETURNING comes back as [rows, affected] in TypeORM, SELECT as rows.
+      const expired = (Array.isArray(raw?.[0]) ? raw[0] : raw) as Array<{
+        id: string;
+        publicId: string;
+        amount: string;
+        currency: string;
+        createdAt: Date;
+        expiresAt: Date;
+      }>;
+      if (expired.length === 0) return 0;
 
-    await this.events.insert(
-      expired.map((row) => ({
-        invoiceId: row.id,
-        type: 'EXPIRED' as InvoiceEventType,
-        actorUserId: null,
-        metadata: null,
-      })),
-    );
-    return expired.length;
+      await manager.query(
+        `INSERT INTO "invoice_events" ("invoiceId", "type", "actorUserId", "metadata")
+         SELECT unnest($1::uuid[]), 'EXPIRED', NULL, NULL`,
+        [expired.map((row) => row.id)],
+      );
+
+      for (const row of expired) {
+        await this.webhooks.enqueue(manager, {
+          merchantId,
+          type: 'invoice.expired',
+          invoiceId: row.id,
+          invoice: {
+            reference: row.publicId,
+            amount: Number(row.amount),
+            currency: row.currency,
+            status: 'EXPIRED',
+            createdAt: new Date(row.createdAt).toISOString(),
+            expiresAt: new Date(row.expiresAt).toISOString(),
+            paidAt: null,
+          },
+        });
+      }
+      return expired.length;
+    });
   }
 
   async findOwned(merchantId: string, idOrPublicId: string): Promise<Invoice> {

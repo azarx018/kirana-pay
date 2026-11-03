@@ -41,6 +41,12 @@ services:
       # Payment links (MVP V3): public origin of the web app and the token HMAC secret.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       PAYMENT_LINK_SECRET: ${PAYMENT_LINK_SECRET:-}
+      # Webhooks (MVP V4): outbox worker + signing-secret encryption key (required in prod).
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      WEBHOOK_WORKER_ENABLED: ${WEBHOOK_WORKER_ENABLED:-true}
+      WEBHOOK_MAX_ENDPOINTS: ${WEBHOOK_MAX_ENDPOINTS:-5}
+      WEBHOOK_ALLOWED_PORTS: ${WEBHOOK_ALLOWED_PORTS:-443,8443}
+      WEBHOOK_DEV_ALLOW_PRIVATE: ${WEBHOOK_DEV_ALLOW_PRIVATE:-false}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5242880}
       MIN_AMOUNT: ${MIN_AMOUNT:-1}
       MAX_AMOUNT: ${MAX_AMOUNT:-100000000}

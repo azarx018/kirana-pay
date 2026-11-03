@@ -7,6 +7,7 @@ import { PaymentProvider } from '../entities/payment-provider.entity';
 import { User } from '../entities/user.entity';
 import { QrModule } from '../qr/qr.module';
 import { AuthModule } from '../auth/auth.module';
+import { WebhooksModule } from '../webhooks/webhooks.module';
 import { InvoicesController } from './invoices.controller';
 import { InvoicesService } from './invoices.service';
 
@@ -15,6 +16,7 @@ import { InvoicesService } from './invoices.service';
     TypeOrmModule.forFeature([Invoice, InvoiceEvent, MerchantQris, PaymentProvider, User]),
     QrModule,
     AuthModule,
+    WebhooksModule,
   ],
   controllers: [InvoicesController],
   providers: [InvoicesService],

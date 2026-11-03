@@ -141,3 +141,45 @@ E2E (stack nyata + penerima lokal dev-policy): key valid/invalid/revoked/expired
 - **K5** Casing camelCase untuk API dan payload webhook (spec memberi contoh snake_case).
 - **K6** Retensi: idempotency 24 jam, riwayat webhook 30 hari; retry manual hanya untuk delivery `FAILED` ≤7 hari.
 - **K7** `invoice.cancelled` tidak diimplementasi (tidak ada status).
+
+---
+
+## STATUS — Stage 4 (webhooks) selesai
+
+Diimplementasikan di branch `feat/mvp-v4-webhooks` (lanjutan dari `2c2117a`):
+
+- **Entity**: `webhook_endpoints`, `webhook_endpoint_audit`, `webhook_events` (outbox),
+  `webhook_deliveries`, `webhook_delivery_attempts` — sesuai migrasi `1700000005000-Webhooks`.
+- **Outbox transaksional**: `WebhookEventsService.enqueue()` dipanggil di dalam transaksi
+  `InvoicesService.create()`, `confirmPayment()`, `sweepExpired()` → commit = event ada.
+- **Fan-out + delivery worker**: `WebhookWorkerService` (poll 2s, `FOR UPDATE SKIP LOCKED`,
+  lease 2 menit, retry 30s→6j dengan jitter, `Retry-After` dihormati, max 8 attempt / 24 jam).
+- **Sender SSRF-safe**: DNS di-resolve saat koneksi dan di-pin, IP privat/loopback/link-local
+  ditolak, port allowlist, redirect tidak diikuti, timeout 5s/3s connect, body respons dibatasi 2KB.
+- **API dashboard**: CRUD endpoint (sesi saja, bukan API key), rotasi secret, riwayat delivery,
+  retry manual. Secret dienkripsi AES-256-GCM dan hanya dikembalikan sekali.
+- **Expiry**: sweep global tiap siklus worker (200 baris/batch) + sweep lazy per merchant, keduanya
+  atomik dengan event outbox.
+- **Retensi**: 30 hari untuk event/delivery/attempt.
+- **Docs**: `docs/webhooks.md` (event, signature, retry, contoh verifikasi Node/Python/PHP).
+- **Env**: `WEBHOOK_SECRET_ENCRYPTION_KEY` (wajib di produksi), `WEBHOOK_WORKER_ENABLED`,
+  `WEBHOOK_MAX_ENDPOINTS`, `WEBHOOK_ALLOWED_PORTS`, `WEBHOOK_DEV_ALLOW_PRIVATE`.
+
+Verifikasi: `tsc --noEmit` bersih, jest **360 test / 31 suite** lulus, plus E2E nyata terhadap
+Postgres + penerima lokal (bukan mock):
+
+- `invoice.paid` → fan-out → POST ke penerima → **200 dalam 8 ms**, signature `v1=` valid
+  (diverifikasi ulang oleh penerima dengan HMAC), delivery `SUCCEEDED`.
+- Penerima balas **500** → `RETRYABLE`, status kembali `PENDING`, `attemptCount=1`,
+  `nextAttemptAt` +30 detik (backoff jalan).
+- URL privat (`http://127.0.0.1`, `https://localhost`, `https://169.254.169.254`, `https://10.0.0.5`)
+  dan port non-allowlist ditolak validator; `https://example.com` diterima.
+- Constraint `(merchantId, url)` unik dan `eventId` unik terbukti menolak duplikat.
+
+Dua bug ditemukan & diperbaiki saat E2E:
+1. Migrasi `webhook_endpoints.id` tidak punya `DEFAULT gen_random_uuid()` → insert gagal.
+2. TypeORM mengembalikan `[rows, count]` untuk `UPDATE … RETURNING` (bukan `rows`) → klaim
+   delivery/fan-out harus dinormalisasi (`rowsOf`).
+
+Sisa untuk Stage 5 (belum dikerjakan): halaman dashboard web untuk mengelola endpoint,
+endpoint replay event, dan pengiriman `payment_link.paid` (V3) ke webhook.
